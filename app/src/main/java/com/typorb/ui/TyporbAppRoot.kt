@@ -26,18 +26,24 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.platform.LocalContext
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
@@ -67,7 +73,44 @@ fun TyporbAppRoot(
     viewModel: TyporbViewModel,
     navController: NavHostController = rememberNavController(),
 ) {
-    val context = androidx.compose.ui.platform.LocalContext.current
+    // Every lifecycle-aware composable below — `collectAsStateWithLifecycle`, `LifecycleEventEffect`
+    // — reads `LocalLifecycleOwner`, which AndroidComposeView supplies from the view tree's
+    // ViewTreeLifecycleOwner. When that is absent they throw
+    // "CompositionLocal LocalLifecycleOwner not present" on first composition and take the whole
+    // app down before a single frame renders. That is exactly what the Minified build did.
+    //
+    // This root is only ever hosted by MainActivity, so the Activity is always available and is the
+    // very instance the window would have provided. Owning it here means no screen has to care
+    // whether the window wired an owner up, and one provider covers the whole subtree instead of
+    // every screen guarding its own reads.
+    val owner = LocalContext.current.findLifecycleOwner()
+    if (owner != null) {
+        CompositionLocalProvider(LocalLifecycleOwner provides owner) {
+            TyporbAppRootContent(viewModel, navController)
+        }
+    } else {
+        TyporbAppRootContent(viewModel, navController)
+    }
+}
+
+/**
+ * Walks the context wrappers to the Activity, which is a [LifecycleOwner].
+ *
+ * `LocalContext` inside an activity's `setContent` is usually the Activity itself, but it may be a
+ * ContextThemeWrapper or a ComposeContext wrapping it, so the unwrap loop is not paranoia.
+ */
+private tailrec fun Context.findLifecycleOwner(): LifecycleOwner? = when (this) {
+    is LifecycleOwner -> this
+    is ContextWrapper -> baseContext.findLifecycleOwner()
+    else -> null
+}
+
+@Composable
+private fun TyporbAppRootContent(
+    viewModel: TyporbViewModel,
+    navController: NavHostController,
+) {
+    val context = LocalContext.current
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val permissions by viewModel.permissions.collectAsStateWithLifecycle()
 
