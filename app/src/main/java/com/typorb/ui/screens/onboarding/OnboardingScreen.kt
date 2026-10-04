@@ -112,7 +112,7 @@ fun OnboardingScreen(
             GateRow(
                 icon = Icons.Rounded.Accessibility,
                 title = "Accessibility service",
-                subtitle = "Required · finds text fields and types into them",
+                subtitle = "Required · draws the orb and types into fields",
                 done = permissions.accessibilityService,
                 onOpen = { onOpenPermission(PermissionTarget.ACCESSIBILITY) },
             )
@@ -123,6 +123,34 @@ fun OnboardingScreen(
                 done = permissions.microphonePermission,
                 onOpen = { onOpenPermission(PermissionTarget.MICROPHONE) },
             )
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // The orb used to ask for "Display over other apps", but it never needed it: the overlay
+            // window is TYPE_ACCESSIBILITY_OVERLAY, which the accessibility grant above already
+            // covers. Typorb requests no SYSTEM_ALERT_WINDOW permission at all. Saying so explicitly
+            // stops users hunting Settings for a toggle that has nothing to do with this app.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Widgets,
+                    contentDescription = null,
+                    tint = TyporbPalette.TextMuted,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = "No \"Display over other apps\" needed — the orb is drawn by the " +
+                        "accessibility service itself, so there is nothing extra to switch on.",
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp,
+                    color = TyporbPalette.TextMuted,
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(22.dp))

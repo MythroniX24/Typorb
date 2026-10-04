@@ -55,6 +55,16 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
     private var lastDictationStartedAtMs = 0L
 
     /**
+     * Cached "an editable field holds focus", refreshed only from events raised by the app.
+     *
+     * Kept as state rather than re-derived, because the only event that announces the keyboard has
+     * risen comes from the IME, and reading focus on that event resolves to the keyboard window
+     * instead of the app — which made the pill hide itself the instant it became eligible to show.
+     */
+    @Volatile
+    private var editableFieldFocused: Boolean = false
+
+    /**
      * Short re-check loop that runs while a field holds focus but the keyboard has not appeared yet.
      *
      * The keyboard animates in *after* the tap, and several OEM keyboards post no further
@@ -77,19 +87,41 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
 
-        // IME-owned events are deliberately NOT dropped. The `TYPE_WINDOW_STATE_CHANGED` that the
-        // keyboard posts when it appears carries the *IME's* package name, so filtering those events
-        // out — as an earlier revision did — threw away the only notification that the IME had
-        // become visible, and the pill could never appear. `getRootInActiveWindow()` still resolves
-        // to the app underneath the keyboard, so focus detection stays correct.
+        // Focus and keyboard visibility are separate questions, and the events that answer them
+        // come from different windows.
+        //
+        // The `TYPE_WINDOW_STATE_CHANGED` that fires when the keyboard rises carries the *IME's*
+        // package name, so those events must not be dropped — they are the only notice that the
+        // keyboard became visible. But an IME event's root is the keyboard itself, and
+        // `getRootInActiveWindow()` can resolve to that keyboard window rather than the app
+        // underneath it. Re-reading focus on such an event finds no editable field and hides the
+        // pill at the exact moment it should appear.
+        //
+        // So: focus is only ever re-read on events from the app, and cached. Keyboard visibility is
+        // re-read on everything.
+        val fromIme = imeDetector.isImePackage(event.packageName?.toString())
+
         when (event.eventType) {
             AccessibilityEvent.TYPE_VIEW_FOCUSED,
             AccessibilityEvent.TYPE_VIEW_CLICKED,
             AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
-            -> evaluateOverlayVisibility()
+            -> if (fromIme) onKeyboardChanged() else evaluateOverlayVisibility()
         }
+    }
+
+    /**
+     * Handles an event raised by the keyboard itself: refresh only the keyboard geometry.
+     *
+     * Focus is deliberately not re-read, because the active window during these events is the IME.
+     */
+    private fun onKeyboardChanged() {
+        if (!::overlay.isInitialized) return
+        val now = System.currentTimeMillis()
+        if (now - lastEvaluationMs < EVALUATION_THROTTLE_MS) return
+        lastEvaluationMs = now
+        applyOverlayState(refreshFocus = false)
     }
 
     override fun onInterrupt() {
@@ -151,7 +183,7 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
         if (now - lastEvaluationMs < EVALUATION_THROTTLE_MS) return
         lastEvaluationMs = now
 
-        if (evaluateOnce()) {
+        if (applyOverlayState(refreshFocus = true)) {
             stopImeWatch()
         } else {
             startImeWatch()
@@ -161,16 +193,21 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
     /**
      * Applies the current focus + IME state to the overlay window.
      *
-     * @return `true` when an editable field still holds focus — i.e. we are only waiting on the
-     *   keyboard, and a re-check is worth scheduling.
+     * @param refreshFocus whether to re-read the focused field. Pass `false` whenever the caller is
+     *   running on a timer or on an IME event: during those the active window is the keyboard, so a
+     *   fresh read would clear [editableFieldFocused] and hide a pill that is correctly eligible.
+     * @return `true` when an editable field holds focus — i.e. we are only waiting on the keyboard,
+     *   and a re-check is worth scheduling.
      */
-    private fun evaluateOnce(): Boolean {
+    private fun applyOverlayState(refreshFocus: Boolean): Boolean {
         if (!::overlay.isInitialized) return false
 
-        val imeState = imeDetector.currentState(screenHeightPx())
-        val editableFieldFocused =
-            EditableFieldInspector.findFocusedEditable(getRootInActiveWindow()) != null
+        if (refreshFocus) {
+            editableFieldFocused =
+                EditableFieldInspector.findFocusedEditable(getRootInActiveWindow()) != null
+        }
 
+        val imeState = imeDetector.currentState(screenHeightPx())
         if (editableFieldFocused && imeState.visible) {
             if (overlayVisible) {
                 overlay.updateKeyboardHeight(imeState.heightPx)
@@ -187,6 +224,9 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
     /**
      * Polls briefly while a field is focused but the keyboard is still animating in, so the pill
      * appears the moment the IME window lands even when no accessibility event announces it.
+     *
+     * Focus is not re-read on each tick: by the time a tick fires the keyboard may already be the
+     * active window, so the cached value from the app's own events is the trustworthy one.
      */
     private fun startImeWatch() {
         if (imeWatchJob?.isActive == true) return
@@ -195,7 +235,7 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
                 val deadline = SystemClock.uptimeMillis() + IME_WATCH_WINDOW_MS
                 while (SystemClock.uptimeMillis() < deadline) {
                     delay(IME_WATCH_INTERVAL_MS)
-                    if (evaluateOnce()) return@launch
+                    if (applyOverlayState(refreshFocus = false)) return@launch
                 }
             } finally {
                 imeWatchJob = null
