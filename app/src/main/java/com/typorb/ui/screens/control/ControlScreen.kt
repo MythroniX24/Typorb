@@ -52,14 +52,16 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.typorb.data.TyporbSettings
 import com.typorb.model.ContextMode
 import com.typorb.model.ProcessingEngine
-import com.typorb.ui.BOTTOM_BAR_CLEARANCE
+import com.typorb.ui.rememberBottomBarClearance
 import com.typorb.ui.PermissionStatus
 import com.typorb.ui.TyporbViewModel
 import com.typorb.ui.components.ElevatedCard
 import com.typorb.ui.components.SectionLabel
 import com.typorb.ui.components.StatusBadge
 import com.typorb.ui.components.TagChip
+import com.typorb.ui.components.entrance
 import com.typorb.ui.components.pressScale
+import com.typorb.ui.icon
 import com.typorb.ui.theme.TyporbPalette
 import com.typorb.ui.theme.TyporbShapes
 
@@ -76,13 +78,14 @@ fun ControlScreen(
     onOpenSettings: () -> Unit,
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val bottomClearance = rememberBottomBarClearance()
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
             .verticalScroll(rememberScrollState())
-            .padding(bottom = BOTTOM_BAR_CLEARANCE),
+            .padding(bottom = bottomClearance),
     ) {
         ControlTopBar(
             serviceActive = permissions.accessibilityService,
@@ -93,14 +96,18 @@ fun ControlScreen(
             modifier = Modifier.padding(horizontal = 18.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
-            EngineHeroCard(settings = settings, onSelect = viewModel::setEngine)
+            EngineHeroCard(
+                settings = settings,
+                onSelect = viewModel::setEngine,
+                modifier = Modifier.entrance(index = 0),
+            )
 
-            Column {
+            Column(modifier = Modifier.entrance(index = 1)) {
                 SectionLabel("Typing context")
                 ModeChips(selected = settings.contextMode, onSelect = viewModel::setContextMode)
             }
 
-            Column {
+            Column(modifier = Modifier.entrance(index = 2)) {
                 SectionLabel("Try it out")
                 SandboxCard(settings = settings, permissions = permissions)
             }
@@ -146,8 +153,9 @@ private fun ControlTopBar(
 private fun EngineHeroCard(
     settings: TyporbSettings,
     onSelect: (ProcessingEngine) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    ElevatedCard(contentPadding = 16.dp) {
+    ElevatedCard(modifier = modifier, contentPadding = 16.dp) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -276,8 +284,9 @@ private fun EngineSegment(
 /**
  * Horizontally scrolling filter chips.
  *
- * The active chip is a solid indigo fill with white text; the rest sit on a clean off-white surface
- * with a hairline border.
+ * Each chip carries a Material icon rather than an emoji: emoji render differently on every OEM font
+ * and sit on their own baseline, which made the row look ragged across devices. The fill and border
+ * animate between states so selecting a chip reads as a transition, not a swap.
  */
 @Composable
 private fun ModeChips(
@@ -294,29 +303,47 @@ private fun ModeChips(
             val isSelected = mode == selected
             val interactionSource = remember { MutableInteractionSource() }
 
-            Box(
+            val container by animateColorAsState(
+                targetValue = if (isSelected) TyporbPalette.Cobalt else TyporbPalette.Surface,
+                animationSpec = tween(200),
+                label = "chip-container",
+            )
+            val outline by animateColorAsState(
+                targetValue = if (isSelected) TyporbPalette.Cobalt else TyporbPalette.Border,
+                animationSpec = tween(200),
+                label = "chip-outline",
+            )
+            val content by animateColorAsState(
+                targetValue = if (isSelected) TyporbPalette.OnAccent else TyporbPalette.TextSecondary,
+                animationSpec = tween(200),
+                label = "chip-content",
+            )
+
+            Row(
                 modifier = Modifier
                     .pressScale(interactionSource, pressedScale = 0.95f)
                     .clip(TyporbShapes.Capsule)
-                    .background(if (isSelected) TyporbPalette.Cobalt else TyporbPalette.Surface)
-                    .border(
-                        BorderStroke(
-                            1.dp,
-                            if (isSelected) TyporbPalette.Cobalt else TyporbPalette.Border,
-                        ),
-                        TyporbShapes.Capsule,
-                    )
+                    .background(container)
+                    .border(BorderStroke(1.dp, outline), TyporbShapes.Capsule)
                     .clickable(
                         interactionSource = interactionSource,
                         indication = null,
                     ) { onSelect(mode) }
                     .padding(horizontal = 15.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
             ) {
+                Icon(
+                    imageVector = mode.icon,
+                    contentDescription = null,
+                    tint = content,
+                    modifier = Modifier.size(15.dp),
+                )
                 Text(
-                    text = "${mode.emoji} ${mode.chipLabel}",
+                    text = mode.chipLabel,
                     fontSize = 12.sp,
                     fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                    color = if (isSelected) TyporbPalette.OnAccent else TyporbPalette.TextSecondary,
+                    color = content,
                 )
             }
         }

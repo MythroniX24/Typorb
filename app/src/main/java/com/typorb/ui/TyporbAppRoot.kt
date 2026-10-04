@@ -14,7 +14,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -30,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -55,7 +59,8 @@ import com.typorb.ui.theme.TyporbShapes
  * The single activity's content: an animated [NavHost] plus a floating pill-shaped bottom bar.
  *
  * The bar is overlaid rather than placed in a `Scaffold` bottomBar slot so it hovers above the
- * content with a margin. Screens therefore pad their own bottom inset ([BOTTOM_BAR_CLEARANCE]).
+ * content with a margin. Screens therefore pad their own bottom inset
+ * ([rememberBottomBarClearance]).
  */
 @Composable
 fun TyporbAppRoot(
@@ -229,8 +234,25 @@ private fun BottomBarItem(
     }
 }
 
-/** Extra bottom padding screens need so the last row clears the floating bar. */
-val BOTTOM_BAR_CLEARANCE = 108.dp
+/**
+ * Extra bottom padding a screen needs so its last row clears the floating bar.
+ *
+ * Computed from the real navigation-bar inset rather than hard-coded: the bar applies
+ * `navigationBarsPadding()` to itself, and a 3-button navigation bar is roughly 48dp tall while a
+ * gesture bar is nearer 16dp. A fixed value therefore either hid content behind the bar on
+ * 3-button devices or left a dead gap on gesture devices.
+ */
+@Composable
+fun rememberBottomBarClearance(): Dp {
+    val navigationBar = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    return BAR_HEIGHT + BAR_OUTER_MARGIN + navigationBar
+}
+
+/** Icon + label + the bar's own inner vertical padding, at the tallest state. */
+private val BAR_HEIGHT = 57.dp
+
+/** The bar's 14dp margin above and below. */
+private val BAR_OUTER_MARGIN = 28.dp
 
 // Crossfade with a whisper of scale, per the design system. A directional slide was tried first
 // but reads as "navigation", which is wrong for peer tabs behind a bottom bar.

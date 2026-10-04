@@ -19,8 +19,6 @@ enum class ProcessingEngine {
 enum class ContextMode(
     val label: String,
     val shortLabel: String,
-    /** Emoji used on the Control screen's filter chips. */
-    val emoji: String,
     /** Full label for the Control screen's chips, where there is room for it. */
     val chipLabel: String,
     val description: String,
@@ -29,7 +27,6 @@ enum class ContextMode(
     QUICK_CHAT(
         label = "Quick Chat",
         shortLabel = "Chat",
-        emoji = "\uD83D\uDEAC",
         chipLabel = "Casual Chat",
         description = "Conversational replies with natural punctuation.",
         systemInstruction = "Rewrite this as a casual chat message. Keep it short and conversational, " +
@@ -38,7 +35,6 @@ enum class ContextMode(
     CODE(
         label = "Code / Bug Report",
         shortLabel = "Code",
-        emoji = "\uD83D\uDCBB",
         chipLabel = "Code & Bug",
         description = "Markdown formatted technical notes.",
         systemInstruction = "Format this as a developer-ready markdown note. Use fenced code blocks " +
@@ -48,7 +44,6 @@ enum class ContextMode(
     NOTES(
         label = "Bullet Notes",
         shortLabel = "Notes",
-        emoji = "\uD83D\uDCDD",
         chipLabel = "Clean Notes",
         description = "Tight bullet points, one idea per line.",
         systemInstruction = "Convert this into concise markdown bullet points, one idea per bullet. " +
@@ -57,7 +52,6 @@ enum class ContextMode(
     FORMAL(
         label = "Formal Email",
         shortLabel = "Formal",
-        emoji = "\u2709\uFE0F",
         chipLabel = "Formal Mail",
         description = "Polished professional prose.",
         systemInstruction = "Rewrite this as a polished, professional email paragraph. Use formal " +

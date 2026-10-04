@@ -40,6 +40,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -59,10 +60,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.typorb.data.Transcript
 import com.typorb.model.ContextMode
 import com.typorb.model.ProcessingEngine
-import com.typorb.ui.BOTTOM_BAR_CLEARANCE
+import com.typorb.ui.rememberBottomBarClearance
 import com.typorb.ui.TyporbViewModel
 import com.typorb.ui.components.ElevatedCard
 import com.typorb.ui.components.TagChip
+import com.typorb.ui.vaultIcon
 import com.typorb.ui.theme.TyporbPalette
 import com.typorb.ui.theme.TyporbShapes
 import com.typorb.ui.util.RelativeTime
@@ -82,7 +84,18 @@ fun VaultScreen(viewModel: TyporbViewModel) {
     val total by viewModel.transcripts.collectAsStateWithLifecycle()
     var confirmClear by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
-    val nowMs = remember(transcripts) { System.currentTimeMillis() }
+    val bottomClearance = rememberBottomBarClearance()
+
+    // Ticks so "Just now" ages into "2 mins ago" while the screen is open. Deriving it from the
+    // list (the previous approach) only refreshed the badges when a transcript was added or removed,
+    // so a screen left open showed frozen timestamps.
+    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(CLOCK_TICK_MS)
+            nowMs = System.currentTimeMillis()
+        }
+    }
 
     // The second tap on "Clear all" is what actually deletes; reset the armed state after a moment
     // so a stray tap later does not wipe the vault.
@@ -166,7 +179,7 @@ fun VaultScreen(viewModel: TyporbViewModel) {
                 contentPadding = PaddingValues(
                     start = 18.dp,
                     end = 18.dp,
-                    bottom = BOTTOM_BAR_CLEARANCE,
+                    bottom = bottomClearance,
                 ),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
@@ -251,6 +264,7 @@ private fun TranscriptCard(
                 tint = if (transcript.mode == ContextMode.CODE) TyporbPalette.Indigo
                 else TyporbPalette.Cobalt,
                 container = TyporbPalette.SurfaceSunken,
+                icon = transcript.mode.vaultIcon,
             )
             Spacer(modifier = Modifier.width(6.dp))
             TagChip(
@@ -438,3 +452,6 @@ private fun EmptyState(hasQuery: Boolean) {
 private val DELETE_TRIGGER_WIDTH = 76.dp
 private const val SNAP_BACK_MS = 200
 private const val CLEAR_ARM_TIMEOUT_MS = 4_000L
+
+/** Badge refresh cadence: often enough to stay honest, rare enough to be free. */
+private const val CLOCK_TICK_MS = 30_000L

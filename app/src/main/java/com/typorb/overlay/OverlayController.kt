@@ -90,6 +90,16 @@ class OverlayController(
             setContent {
                 val currentState by state.collectAsState()
                 val currentSettings by settings.collectAsState()
+
+                // The window is sized outside Compose, so a settings change has to drive a re-layout:
+                // the Skia content would otherwise render the new orb size clipped to the old window.
+                androidx.compose.runtime.LaunchedEffect(
+                    currentSettings.overlaySizeDp,
+                    currentSettings.overlayCornerRadiusDp,
+                ) {
+                    applyLayout(state.value)
+                }
+
                 TyporbTheme {
                     TyporbOverlayContent(
                         state = currentState,
@@ -172,8 +182,11 @@ class OverlayController(
 
         layoutParams.width = width + padding * 2
         layoutParams.height = height + padding * 2
-        layoutParams.x = pillX - padding
-        layoutParams.y = pillY - padding
+        // Clamped rather than negative: with a very tall IME the pill's own top can be at the screen
+        // edge, and subtracting the shadow padding would otherwise push the window off-screen and
+        // clip the top of the orb.
+        layoutParams.x = (pillX - padding).coerceAtLeast(0)
+        layoutParams.y = (pillY - padding).coerceAtLeast(0)
         runCatching { windowManager.updateViewLayout(view, layoutParams) }
             .onFailure { Log.w(TAG, "Could not reposition the overlay", it) }
     }

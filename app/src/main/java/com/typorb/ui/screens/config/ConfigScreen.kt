@@ -3,6 +3,7 @@ package com.typorb.ui.screens.config
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -64,7 +65,7 @@ import com.typorb.data.ModelCatalog
 import com.typorb.data.OfflineModelState
 import com.typorb.data.TyporbSettings
 import com.typorb.ui.ApiKeyCheck
-import com.typorb.ui.BOTTOM_BAR_CLEARANCE
+import com.typorb.ui.rememberBottomBarClearance
 import com.typorb.ui.PermissionStatus
 import com.typorb.ui.PermissionTarget
 import com.typorb.ui.TyporbViewModel
@@ -75,6 +76,7 @@ import com.typorb.ui.components.SecondaryButton
 import com.typorb.ui.components.SectionLabel
 import com.typorb.ui.components.SettingRow
 import com.typorb.ui.components.TagChip
+import com.typorb.ui.components.entrance
 import com.typorb.ui.theme.TyporbPalette
 import com.typorb.ui.theme.TyporbShapes
 
@@ -87,13 +89,14 @@ fun ConfigScreen(
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val modelState by viewModel.modelState.collectAsStateWithLifecycle()
     val context = androidx.compose.ui.platform.LocalContext.current
+    val bottomClearance = rememberBottomBarClearance()
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
             .verticalScroll(rememberScrollState())
-            .padding(bottom = BOTTOM_BAR_CLEARANCE),
+            .padding(bottom = bottomClearance),
     ) {
         Text(
             text = "Settings",
@@ -107,22 +110,22 @@ fun ConfigScreen(
             modifier = Modifier.padding(horizontal = 18.dp),
             verticalArrangement = Arrangement.spacedBy(22.dp),
         ) {
-            Column {
+            Column(modifier = Modifier.entrance(index = 0)) {
                 SectionLabel("Groq API")
                 ApiKeyCard(viewModel = viewModel, settings = settings)
             }
-            Column {
+            Column(modifier = Modifier.entrance(index = 1)) {
                 SectionLabel("Model storage")
                 ModelStorageCard(viewModel = viewModel, settings = settings, state = modelState)
             }
-            Column {
+            Column(modifier = Modifier.entrance(index = 2)) {
                 SectionLabel("Permissions")
                 PermissionCard(
                     permissions = permissions,
                     onOpen = { target -> viewModel.launchPermission(context, target) },
                 )
             }
-            Column {
+            Column(modifier = Modifier.entrance(index = 3)) {
                 SectionLabel("Overlay customization")
                 CustomizationCard(viewModel = viewModel, settings = settings)
             }
@@ -324,7 +327,11 @@ private fun ModelStorageCard(
     settings: TyporbSettings,
     state: OfflineModelState,
 ) {
-    ElevatedCard(contentPadding = 16.dp) {
+    // animateContentSize so the card grows into the progress bar instead of jumping.
+    ElevatedCard(
+        modifier = Modifier.animateContentSize(),
+        contentPadding = 16.dp,
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 text = "Local ONNX model",

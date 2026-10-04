@@ -128,6 +128,8 @@ fun StatusBadge(
 ) {
     val container = if (active) TyporbPalette.EmeraldTint else TyporbPalette.SurfaceSunken
     val content = if (active) TyporbPalette.Emerald else TyporbPalette.TextSecondary
+    // Only the live state breathes; a "needs setup" badge stays perfectly still so it never nags.
+    val breath = rememberBreathingAlpha()
 
     Row(
         modifier = modifier
@@ -138,12 +140,22 @@ fun StatusBadge(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(7.dp),
     ) {
-        Box(
-            modifier = Modifier
-                .size(7.dp)
-                .clip(CircleShape)
-                .background(content),
-        )
+        Box(contentAlignment = Alignment.Center) {
+            // A soft halo behind the dot, at the same cadence, gives the badge a pulse without
+            // making the dot itself flicker in size.
+            Box(
+                modifier = Modifier
+                    .size(14.dp)
+                    .clip(CircleShape)
+                    .background(content.copy(alpha = if (active) (breath - 0.5f) * 0.22f else 0f)),
+            )
+            Box(
+                modifier = Modifier
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(content),
+            )
+        }
         Text(
             text = text,
             fontSize = 12.sp,
@@ -153,24 +165,43 @@ fun StatusBadge(
     }
 }
 
-/** Small rounded metadata label, e.g. a mode or latency tag. */
+/**
+ * Small rounded metadata label, e.g. a mode or latency tag.
+ *
+ * [icon] is optional so a tag can carry a glyph where one reads faster than the word (the mode pill)
+ * and stay text-only where it does not (a byte count).
+ */
 @Composable
 fun TagChip(
     text: String,
     modifier: Modifier = Modifier,
     tint: Color = TyporbPalette.TextSecondary,
     container: Color = TyporbPalette.SurfaceSunken,
+    icon: ImageVector? = null,
 ) {
-    Text(
-        text = text,
-        fontSize = 11.sp,
-        fontWeight = FontWeight.Medium,
-        color = tint,
+    Row(
         modifier = modifier
             .clip(TyporbShapes.Capsule)
             .background(container)
             .padding(horizontal = 10.dp, vertical = 5.dp),
-    )
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        if (icon != null) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier.size(12.dp),
+            )
+        }
+        Text(
+            text = text,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium,
+            color = tint,
+        )
+    }
 }
 
 /** Filled indigo primary action, with a press-scale micro-interaction. */
