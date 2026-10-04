@@ -6,8 +6,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -234,8 +232,9 @@ private fun BottomBarItem(
 /** Extra bottom padding screens need so the last row clears the floating bar. */
 val BOTTOM_BAR_CLEARANCE = 108.dp
 
-// Directional slide so the tab being selected feels like it comes from where the user tapped.
-private fun tabEnter() = fadeIn(tween(220)) + slideInHorizontally(tween(260)) { it / 12 }
-private fun tabExit() = fadeOut(tween(160)) + slideOutHorizontally(tween(260)) { -it / 16 }
-private fun tabPopEnter() = fadeIn(tween(220)) + slideInHorizontally(tween(260)) { -it / 16 }
-private fun tabPopExit() = fadeOut(tween(160)) + slideOutHorizontally(tween(260)) { it / 12 }
+// Crossfade with a whisper of scale, per the design system. A directional slide was tried first
+// but reads as "navigation", which is wrong for peer tabs behind a bottom bar.
+private fun tabEnter() = fadeIn(tween(240)) + scaleIn(tween(240), initialScale = 0.985f)
+private fun tabExit() = fadeOut(tween(180)) + scaleOut(tween(180), targetScale = 1.008f)
+private fun tabPopEnter() = fadeIn(tween(240)) + scaleIn(tween(240), initialScale = 0.985f)
+private fun tabPopExit() = fadeOut(tween(180)) + scaleOut(tween(180), targetScale = 1.008f)
