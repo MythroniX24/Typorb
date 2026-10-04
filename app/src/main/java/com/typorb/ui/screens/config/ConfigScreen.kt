@@ -55,6 +55,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -62,6 +63,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.typorb.data.ModelCatalog
+import com.typorb.diagnostics.AccessibilityEventNames
+import com.typorb.diagnostics.OrbDiagnosticsBus
 import com.typorb.data.OfflineModelState
 import com.typorb.data.TyporbSettings
 import com.typorb.ui.ApiKeyCheck
@@ -156,7 +159,177 @@ fun ConfigScreen(
                 CustomizationCard(viewModel = viewModel, settings = settings)
             }
         }
+
+        item(key = "config-debug") {
+            Column(
+                modifier = Modifier
+                    .padding(start = 18.dp, end = 18.dp, top = 22.dp)
+                    .entrance(index = 4),
+            ) {
+                SectionLabel("Diagnostics")
+                DebugConsoleCard(
+                    onOpenAccessibility = {
+                        viewModel.launchPermission(context, PermissionTarget.ACCESSIBILITY)
+                    },
+                )
+            }
+        }
     }
+}
+
+// ------------------------------------------------------------------- debug console
+
+/**
+ * Answers "why is the orb not showing?" without needing a cable, a logcat or a bug report.
+ *
+ * Every row here is a fact the orb's visibility actually depends on, so a single wrong row
+ * identifies the broken link. The verdict at the top is derived from those rows rather than
+ * written by hand, which keeps the explanation and the real decision from drifting apart.
+ */
+@Composable
+private fun DebugConsoleCard(onOpenAccessibility: () -> Unit) {
+    val diagnostics by OrbDiagnosticsBus.state.collectAsStateWithLifecycle()
+    val clipboard = LocalClipboardManager.current
+    val healthy = diagnostics.serviceConnected && diagnostics.overlayVisible
+
+    ElevatedCard(contentPadding = 16.dp) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "Orb debug console",
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = TyporbPalette.TextPrimary,
+                modifier = Modifier.weight(1f),
+            )
+            TagChip(
+                text = if (healthy) "Live" else "Check me",
+                tint = if (healthy) TyporbPalette.Emerald else TyporbPalette.Danger,
+                container = if (healthy) TyporbPalette.EmeraldTint else TyporbPalette.DangerTint,
+            )
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = "Live state of the floating orb, straight from the accessibility service.",
+            fontSize = 12.sp,
+            color = TyporbPalette.TextSecondary,
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Text(
+            text = diagnostics.headline(),
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold,
+            color = if (healthy) TyporbPalette.Emerald else TyporbPalette.Danger,
+        )
+        Spacer(modifier = Modifier.height(3.dp))
+        Text(
+            text = diagnostics.detail(),
+            fontSize = 12.sp,
+            color = TyporbPalette.TextSecondary,
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+        Hairline()
+        Spacer(modifier = Modifier.height(10.dp))
+
+        DebugRow("Accessibility service", yesNo(diagnostics.serviceConnected))
+        DebugRow("Events received", diagnostics.eventCount.toString())
+        DebugRow(
+            label = "Last event",
+            value = "${AccessibilityEventNames.name(diagnostics.lastEventType)} " +
+                "· ${diagnostics.lastEventPackage?.substringAfterLast('.') ?: "—"}",
+        )
+        DebugRow("Text field focused", yesNo(diagnostics.editableFieldFocused))
+        DebugRow("Windows visible", diagnostics.windowsSeen.toString())
+        DebugRow("Keyboard window found", yesNo(diagnostics.imeWindowFound))
+        DebugRow("Keyboard height", "${diagnostics.imeHeightPx} px")
+        DebugRow("Keyboard visible", yesNo(diagnostics.imeVisible))
+        DebugRow("Keyboard (inset signal)", "${diagnostics.imeInsetPx} px")
+        DebugRow("IME package", diagnostics.imePackage?.substringAfterLast('.') ?: "unknown")
+        DebugRow("Overlay window", yesNo(diagnostics.overlayVisible))
+        DebugRow("Inset probe", if (diagnostics.probeAttached) "attached" else "not attached")
+        DebugRow("Last check", lastCheckLabel(diagnostics.lastEvaluationAtMs))
+
+        if (diagnostics.breadcrumbs.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(10.dp))
+            Text(
+                text = "RECENT ACTIVITY",
+                fontSize = 10.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = TyporbPalette.TextMuted,
+            )
+            Spacer(modifier = Modifier.height(5.dp))
+            diagnostics.breadcrumbs.forEach { line ->
+                Text(
+                    text = "· $line",
+                    fontSize = 11.sp,
+                    color = TyporbPalette.TextSecondary,
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SecondaryButton(
+                text = "Copy report",
+                icon = Icons.Rounded.ContentPaste,
+                onClick = {
+                    clipboard.setText(
+                        AnnotatedString(
+                            diagnostics.asReport(System.currentTimeMillis()),
+                        ),
+                    )
+                },
+                modifier = Modifier.weight(1f),
+            )
+            SecondaryButton(
+                text = "Fix it",
+                icon = Icons.Rounded.Accessibility,
+                onClick = onOpenAccessibility,
+                modifier = Modifier.weight(1f),
+            )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "Copied reports include every row above — paste one into a bug report.",
+            fontSize = 11.sp,
+            color = TyporbPalette.TextMuted,
+        )
+    }
+}
+
+@Composable
+private fun DebugRow(label: String, value: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp),
+    ) {
+        Text(
+            text = label,
+            fontSize = 12.sp,
+            color = TyporbPalette.TextSecondary,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = value,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            color = TyporbPalette.TextPrimary,
+        )
+    }
+}
+
+private fun yesNo(value: Boolean): String = if (value) "yes" else "no"
+
+private fun lastCheckLabel(lastEvaluationAtMs: Long): String {
+    if (lastEvaluationAtMs == 0L) return "never"
+    return java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+        .format(java.util.Date(lastEvaluationAtMs))
 }
 
 // --------------------------------------------------------------------- API key

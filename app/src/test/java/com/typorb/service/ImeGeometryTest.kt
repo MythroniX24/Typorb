@@ -132,3 +132,27 @@ class ImeGeometryTest {
 
     private fun displayHeightPx() = 1520f
 }
+
+class ImeFallbackHeightTest {
+
+    @Test
+    fun `an unmeasurable ime window falls back to two fifths of the display`() {
+        // Redmi 8A: 720x1520, so 608px — close to a real Gboard.
+        assertEquals(608, ImeGeometry.fallbackHeight(1520))
+    }
+
+    @Test
+    fun `the fallback never drops below a real keyboard`() {
+        // A tiny display must not produce a height so small the pill sits inside the keyboard.
+        assertEquals(
+            ImeGeometry.MIN_KEYBOARD_HEIGHT_PX,
+            ImeGeometry.fallbackHeight(200),
+        )
+    }
+
+    @Test
+    fun `a zero or negative display still yields a usable height`() {
+        assertEquals(ImeGeometry.MIN_KEYBOARD_HEIGHT_PX, ImeGeometry.fallbackHeight(0))
+        assertEquals(ImeGeometry.MIN_KEYBOARD_HEIGHT_PX, ImeGeometry.fallbackHeight(-100))
+    }
+}

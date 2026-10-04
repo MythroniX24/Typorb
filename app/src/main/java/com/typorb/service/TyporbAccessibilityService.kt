@@ -12,10 +12,12 @@ import androidx.lifecycle.LifecycleRegistry
 import androidx.lifecycle.lifecycleScope
 import com.typorb.TyporbApp
 import com.typorb.TyporbContainer
+import com.typorb.diagnostics.OrbDiagnosticsBus
 import com.typorb.domain.DictationCoordinator
 import com.typorb.domain.TyporbException
 import com.typorb.model.OverlayUiState
 import com.typorb.model.ProcessingEngine
+import com.typorb.overlay.ImeProbeController
 import com.typorb.overlay.OverlayController
 import com.typorb.util.Haptics
 import kotlinx.coroutines.Job
@@ -48,10 +50,14 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
     private lateinit var imeDetector: ImeDetector
     private lateinit var haptics: Haptics
     private lateinit var overlay: OverlayController
+    private var imeProbe: ImeProbeController? = null
 
     private var coordinator: DictationCoordinator? = null
     private var overlayVisible = false
     private var lastEvaluationMs = 0L
+
+    /** Last breadcrumb emitted, so an unchanged verdict is not logged 25 times a second. */
+    private var lastPublishedSummary: String? = null
     private var lastDictationStartedAtMs = 0L
 
     /**
@@ -81,11 +87,35 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
         runCatching {
             lifecycleRegistry.currentState = Lifecycle.State.STARTED
             setUp()
-        }.onFailure { Log.e(TAG, "Typorb could not start", it) }
+            OrbDiagnosticsBus.update {
+                it.copy(serviceConnected = true, setupError = null)
+            }
+            OrbDiagnosticsBus.note("service connected")
+        }.onFailure { error ->
+            // Previously this failure was logged and then swallowed, leaving the process alive with
+            // no overlay and no explanation anywhere the user could see. It is now recorded where
+            // the Settings screen renders it.
+            Log.e(TAG, "Typorb could not start", error)
+            OrbDiagnosticsBus.update {
+                it.copy(
+                    serviceConnected = false,
+                    setupError = "${error::class.java.simpleName}: ${error.message}",
+                )
+            }
+            OrbDiagnosticsBus.note("startup FAILED: ${error::class.java.simpleName}")
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
+
+        OrbDiagnosticsBus.update { current ->
+            current.copy(
+                eventCount = current.eventCount + 1,
+                lastEventPackage = event.packageName?.toString(),
+                lastEventType = event.eventType,
+            )
+        }
 
         // Focus and keyboard visibility are separate questions, and the events that answer them
         // come from different windows.
@@ -121,6 +151,7 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
         val now = System.currentTimeMillis()
         if (now - lastEvaluationMs < EVALUATION_THROTTLE_MS) return
         lastEvaluationMs = now
+        Log.i(TAG, "IME event → re-evaluating keyboard only")
         applyOverlayState(refreshFocus = false)
     }
 
@@ -130,6 +161,10 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
 
     override fun onDestroy() {
         stopImeWatch()
+        imeProbe?.stop()
+        imeProbe = null
+        OrbDiagnosticsBus.update { it.copy(serviceConnected = false, probeAttached = false) }
+        OrbDiagnosticsBus.note("service destroyed")
         if (::overlay.isInitialized) hideOverlay()
         coordinator?.release()
         coordinator = null
@@ -157,6 +192,21 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
             onImeInsetChanged = imeDetector::reportInsetFallback,
         )
 
+        // Attached before the first event can arrive, so the inset signal is never waiting on the
+        // orb window that only appears once a keyboard has already been detected.
+        val probe = ImeProbeController(this) { heightPx ->
+            imeDetector.reportInsetFallback(heightPx)
+        }
+        imeProbe = probe
+        val probeAttached = probe.start()
+        OrbDiagnosticsBus.update {
+            it.copy(
+                imePackage = imeDetector.currentImePackage,
+                probeAttached = probeAttached,
+            )
+        }
+        Log.i(TAG, "IME probe window attached=$probeAttached ime=${imeDetector.currentImePackage}")
+
         // Warm the offline model up front only when Local mode is selected.
         lifecycleScope.launch {
             container.settingsRepository.settings
@@ -183,10 +233,14 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
         if (now - lastEvaluationMs < EVALUATION_THROTTLE_MS) return
         lastEvaluationMs = now
 
+        // [applyOverlayState] answers "does a field hold focus", i.e. "are we only waiting on the
+        // keyboard". These branches were previously swapped, which meant the poll that exists
+        // precisely to catch a slow-rising keyboard was cancelled at the moment it was needed and
+        // started when it was pointless.
         if (applyOverlayState(refreshFocus = true)) {
-            stopImeWatch()
-        } else {
             startImeWatch()
+        } else {
+            stopImeWatch()
         }
     }
 
@@ -208,7 +262,8 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
         }
 
         val imeState = imeDetector.currentState(screenHeightPx())
-        if (editableFieldFocused && imeState.visible) {
+        val shouldShow = editableFieldFocused && imeState.visible
+        if (shouldShow) {
             if (overlayVisible) {
                 overlay.updateKeyboardHeight(imeState.heightPx)
             } else {
@@ -218,7 +273,39 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
         } else {
             hideOverlay()
         }
+
+        publishDiagnostics(imeState.heightPx, imeState.visible, shouldShow)
         return editableFieldFocused
+    }
+
+    /** Mirrors the decision just made into the bus the Settings screen renders. */
+    private fun publishDiagnostics(imeHeightPx: Int, imeVisible: Boolean, shouldShow: Boolean) {
+        val nextOverlay = if (shouldShow) overlayVisible else false
+        val insetPx = if (::imeDetector.isInitialized) imeDetector.insetHeightPx else 0
+        val windowsSeen = if (::imeDetector.isInitialized) imeDetector.lastWindowsSeen else 0
+        val imeWindowFound = if (::imeDetector.isInitialized) imeDetector.lastImeWindowFound else false
+        val summary = "focus=$editableFieldFocused ime=$imeVisible/${imeHeightPx}px orb=$nextOverlay"
+
+        OrbDiagnosticsBus.update {
+            it.copy(
+                editableFieldFocused = editableFieldFocused,
+                overlayVisible = nextOverlay,
+                imeVisible = imeVisible,
+                imeHeightPx = imeHeightPx,
+                imeInsetPx = insetPx,
+                windowsSeen = windowsSeen,
+                imeWindowFound = imeWindowFound,
+                lastEvaluationAtMs = System.currentTimeMillis(),
+            )
+        }
+
+        // The watch loop re-evaluates up to 25×/s, so a breadcrumb and a log line are only worth
+        // emitting when the verdict actually changed.
+        if (summary != lastPublishedSummary) {
+            lastPublishedSummary = summary
+            Log.i(TAG, "evaluated: $summary")
+            OrbDiagnosticsBus.note(summary)
+        }
     }
 
     /**
@@ -235,7 +322,10 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
                 val deadline = SystemClock.uptimeMillis() + IME_WATCH_WINDOW_MS
                 while (SystemClock.uptimeMillis() < deadline) {
                     delay(IME_WATCH_INTERVAL_MS)
-                    if (applyOverlayState(refreshFocus = false)) return@launch
+                    // Keep polling for as long as a field still holds focus; that window is exactly
+                    // the one where the keyboard is rising. Previously this returned on the *first*
+                    // tick where focus was present, i.e. before the keyboard had appeared.
+                    if (!applyOverlayState(refreshFocus = false)) return@launch
                 }
             } finally {
                 imeWatchJob = null
