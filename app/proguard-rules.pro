@@ -27,6 +27,30 @@
 # EncryptedSharedPreferences
 -keep class androidx.security.crypto.** { *; }
 
+# Tink resolves its key managers and parameter serialisation reflectively, and throws
+# NoClassDefFoundError / ExceptionInInitializerError rather than an IOException when R8 has
+# removed what it needed. Keep its protobuf runtime and its shaded classes intact so a Minified
+# build can still construct an EncryptedSharedPreferences at all.
+-keep class com.google.crypto.tink.** { *; }
+-keep interface com.google.crypto.tink.** { *; }
+-dontwarn com.google.crypto.tink.**
+-keep class com.google.protobuf.** { *; }
+-dontwarn com.google.protobuf.**
+# Tink logs via java.util.logging, which is absent on Android.
+-dontwarn java.util.logging.**
+
+# The launcher activity and accessibility service are named in the manifest and resolved by the
+# framework; R8 keeps them, but their entry points are worth stating explicitly.
+-keep class com.typorb.ui.dashboard.MainActivity { *; }
+-keep class com.typorb.service.TyporbAccessibilityService { *; }
+-keep class com.typorb.TyporbApp { *; }
+
+# Enum valueOf/values are used for settings and context modes persisted by name.
+-keepclassmembers enum com.typorb.** {
+    public static **[] values();
+    public static ** valueOf(java.lang.String);
+}
+
 # ONNX Runtime
 -keep class ai.onnxruntime.** { *; }
 -dontwarn ai.onnxruntime.**
