@@ -27,21 +27,21 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # The ubuntu-latest image already ships the SDK and cmdline-tools. We deliberately do not use
+      # android-actions/setup-android here: its `sdkmanager tools` call fails on current runners
+      # because the legacy `tools` package was removed from the SDK repository.
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        run: |
+          SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          SDKMANAGER="$(ls -d "$SDK_ROOT"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -1)"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
 
+      # Caches the Gradle distribution and all dependency artifacts.
       - name: Set up Gradle (with dependency caching)
         uses: gradle/actions/setup-gradle@v4
-
-      - name: Cache Android SDK components
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.android/build-cache
-            ~/.android/cache
-          key: android-sdk-${{ runner.os }}-${{ hashFiles('app/build.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
-          restore-keys: |
-            android-sdk-${{ runner.os }}-
 
       - name: Grant execute permission to ./gradlew
         run: chmod +x ./gradlew
