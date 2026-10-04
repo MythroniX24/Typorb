@@ -7,11 +7,16 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <!--
-      Required so the overlay can be drawn above other apps. The AccessibilityService overlay
-      itself uses TYPE_ACCESSIBILITY_OVERLAY, which does not need this permission, but the
-      dashboard exposes a manual fallback path for OEMs that block accessibility overlays.
+      SYSTEM_ALERT_WINDOW is deliberately NOT declared.
+
+      The overlay window is TYPE_ACCESSIBILITY_OVERLAY, which is granted by the accessibility
+      service itself and needs no permission. Nothing in the app opens a TYPE_APPLICATION_OVERLAY
+      window, so the permission was declared but never used.
+
+      Beyond being dead weight, pairing SYSTEM_ALERT_WINDOW with an AccessibilityService is a
+      well-known Play Protect heuristic — the exact shape of the accessibility-abuse pattern — and
+      it made sideloading harder for no benefit.
     -->
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <uses-feature
         android:name="android.hardware.microphone"

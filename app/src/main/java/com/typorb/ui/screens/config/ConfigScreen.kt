@@ -537,13 +537,6 @@ private fun PermissionCard(
             onToggle = { onOpen(PermissionTarget.ACCESSIBILITY) },
         )
         PermissionSwitchRow(
-            icon = Icons.Rounded.Widgets,
-            title = "Overlay permission",
-            subtitle = "Keeps the orb visible on some OEM skins",
-            granted = permissions.overlayPermission,
-            onToggle = { onOpen(PermissionTarget.OVERLAY) },
-        )
-        PermissionSwitchRow(
             icon = Icons.Rounded.Mic,
             title = "Microphone",
             subtitle = "Captures your voice",

@@ -42,16 +42,7 @@ object Permissions {
             }
         }
         return false
-    }
-
-    fun isOverlayPermissionGranted(context: Context): Boolean =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            Settings.canDrawOverlays(context)
-        } else {
-            true
-        }
-
-    fun isMicrophonePermissionGranted(context: Context): Boolean =
+    }fun isMicrophonePermissionGranted(context: Context): Boolean =
         androidx.core.content.ContextCompat.checkSelfPermission(
             context,
             android.Manifest.permission.RECORD_AUDIO,
@@ -59,16 +50,7 @@ object Permissions {
 
     /** Opens the accessibility settings list, pre-focused on Typorb where supported. */
     fun accessibilitySettingsIntent(): Intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-
-    /** Opens the "display over other apps" screen for this package. */
-    fun overlaySettingsIntent(context: Context): Intent =
-        Intent(
-            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-            Uri.parse("package:${context.packageName}"),
-        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-
-    /** App details page, used for the microphone permission. */
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)/** App details page, used for the microphone permission. */
     fun appDetailsIntent(context: Context): Intent =
         Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
             .setData(Uri.parse("package:${context.packageName}"))

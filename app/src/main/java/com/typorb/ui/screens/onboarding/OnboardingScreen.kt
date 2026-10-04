@@ -123,13 +123,6 @@ fun OnboardingScreen(
                 done = permissions.microphonePermission,
                 onOpen = { onOpenPermission(PermissionTarget.MICROPHONE) },
             )
-            GateRow(
-                icon = Icons.Rounded.Widgets,
-                title = "Display over other apps",
-                subtitle = "Optional · keeps the orb visible everywhere",
-                done = permissions.overlayPermission,
-                onOpen = { onOpenPermission(PermissionTarget.OVERLAY) },
-            )
         }
 
         Spacer(modifier = Modifier.height(22.dp))

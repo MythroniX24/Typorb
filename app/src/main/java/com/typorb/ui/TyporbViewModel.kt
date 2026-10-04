@@ -26,10 +26,9 @@ import kotlinx.coroutines.withTimeoutOrNull
 /** Live status of everything the user must grant before dictation works. */
 data class PermissionStatus(
     val accessibilityService: Boolean,
-    val overlayPermission: Boolean,
     val microphonePermission: Boolean,
 ) {
-    /** The pill itself only needs the accessibility service; the rest are user-experience extras. */
+    /** The orb draws a TYPE_ACCESSIBILITY_OVERLAY window, which the accessibility grant covers. */
     val ready: Boolean get() = accessibilityService
 }
 
@@ -49,7 +48,6 @@ sealed interface ApiKeyCheck {
 /** Which system screen a "Grant" tap should open. */
 enum class PermissionTarget {
     ACCESSIBILITY,
-    OVERLAY,
     MICROPHONE,
 }
 
@@ -123,7 +121,6 @@ class TyporbViewModel(application: Application) : AndroidViewModel(application) 
         val context = getApplication<Application>()
         return PermissionStatus(
             accessibilityService = Permissions.isAccessibilityServiceEnabled(context),
-            overlayPermission = Permissions.isOverlayPermissionGranted(context),
             microphonePermission = Permissions.isMicrophonePermissionGranted(context),
         )
     }
@@ -137,7 +134,6 @@ class TyporbViewModel(application: Application) : AndroidViewModel(application) 
     fun launchPermission(context: Context, target: PermissionTarget) {
         val intent = when (target) {
             PermissionTarget.ACCESSIBILITY -> Permissions.accessibilitySettingsIntent()
-            PermissionTarget.OVERLAY -> Permissions.overlaySettingsIntent(context)
             PermissionTarget.MICROPHONE -> Permissions.appDetailsIntent(context)
         }
         runCatching { context.startActivity(intent) }
