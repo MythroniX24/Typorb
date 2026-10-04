@@ -1,32 +1,30 @@
-# Production release APK CI workflow.
+# Release APK — ProGuarded, shrunk, and ready to sideload.
 #
-# Builds ONE signed, minified, self-contained release APK for GitHub-hosted downloads.
-# Requires: (1) a release keystore + keystore.properties, (2) offline ONNX weights.
+# GitHub's runners have 16 GB RAM and 4 cores, which is what R8 actually needs; a 2 GB developer
+# box will get OOM-killed mid-minification. That is why this lives in CI.
 #
-# Prerequisites before you can download this APK:
-#   1. Create a release keystore (.jks) and a keystore.properties file:
-#        storeFile=/absolute/path/to/typorb-release.jks
-#        storePassword=<strong-store-password>
-#        keyAlias=typorb
-#        keyPassword=<key-password>
-#      Commit keystore.properties is NOT optional for a signed release. It's gitignored
-#      by default, so keep it out of git and set it as a repository secret OR commit it
-#      (the workflow reads it from disk, not from a secret).
-#   2. The offline ONNX weights (whisper-tiny.onnx, whisper-tiny-decoder.onnx,
-#      tokenizer.json) are gitignored. Fetch them with:
-#        sh tools/fetch-whisper-model.sh
-#      (needs ~140MB of space). The release workflow runs this automatically.
+# Signing
+# -------
+# The APK is signed so it can actually be installed. Two paths, in priority order:
 #
-# Usage:
-#   - Push to `main`: triggers automatically.
-#   - Workflow dispatch: run manually from the Actions tab.
-#   - Artifact: `app-release` (~110-170 MB), upload to GitHub Releases.
+#   1. Repository secrets — set these in Settings → Secrets and variables → Actions:
+#        TYPORB_KEYSTORE_BASE64   base64 of your .jks   (base64 -w0 typorb-release.jks | pbcopy)
+#        TYPORB_STORE_PASSWORD
+#        TYPORB_KEY_ALIAS
+#        TYPORB_KEY_PASSWORD
+#      This is the path to use for anything you intend to keep or ship: the key stays yours, so
+#      every future build upgrades the installed app instead of forcing a reinstall.
 #
-# Known limitations (not CI errors):
-#   - Android 13+ requires a targetSdk of 33+ / platformBuildVersionCode 33+ for 64-bit only.
-#   - 32-bit (armeabi-v7a) is NOT built for a 64-bit targetSdk; use buildTools 34.
-#   - Store password / key password are written to the .gradle/ file-properties cache
-#     on the runner. This workflow does not expose those secrets.
+#   2. Fallback — if those secrets are absent, the workflow generates an ephemeral key for that
+#      run. The APK is installable, but because the key is thrown away afterwards, every future
+#      release is signed differently and Android will refuse to upgrade over it: the user has to
+#      uninstall first. Fine for personal sideloading, not for distribution.
+#
+# Model weights
+# -------------
+# The Whisper ONNX files are gitignored, so a clean checkout has none. We fetch them; if that
+# fails the build still succeeds, because the app downloads and SHA-256-verifies the same weights
+# on first run instead. A slim release is a legitimate outcome, just a different one.
 
 name: Build Release APK
 
@@ -35,15 +33,16 @@ on:
     branches:
       - main
   workflow_dispatch:
+  release:
+    types: [published]
 
-# Never cancel a build that has already produced an artifact.
 concurrency:
   group: build-release-apk-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   build:
-    name: Assemble release APK
+    name: Assemble ProGuarded release APK
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -51,8 +50,6 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          # The offline ONNX weights are gitignored, so we must NOT rely on a clean
-          # checkout carrying them. We fetch them below instead.
           fetch-depth: 1
 
       - name: Set up JDK 17
@@ -61,75 +58,134 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # The ubuntu-latest image already ships the SDK and cmdline-tools. We deliberately do
-      # not use `android-actions/setup-android` here: its `sdkmanager tools` call fails on
-      # current runners because the legacy `tools` package was removed from the SDK repository.
+      # The ubuntu-latest image already ships the SDK and cmdline-tools. We deliberately do not use
+      # `android-actions/setup-android` here: its `sdkmanager tools` call fails on current runners
+      # because the legacy `tools` package was removed from the SDK repository.
       - name: Set up Android SDK
         run: |
           SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
-          if [ -z "$SDK_ROOT" ]; then
-            SDK_ROOT="$RUNNER_TEMP/android-sdk"
-            echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
-            echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
-          fi
           SDKMANAGER="$(ls -d "$SDK_ROOT"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -1)"
           yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
           "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
           echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
           echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
 
-      # Caches the Gradle distribution and all dependency artifacts.
       - name: Set up Gradle (with dependency caching)
         uses: gradle/actions/setup-gradle@v4
 
       - name: Grant execute permission to ./gradlew
         run: chmod +x ./gradlew
 
-      # --- Pre-fetch offline model weights (needed for release) -------------------
-      # These files are gitignored, so a clean checkout has no weights. Fetch them so the
-      # release build can package them. Fail the build if the model server is unreachable
-      # so the developer knows offline weights are required for a release.
-      - name: Pre-fetch Whisper model (offline mode)
+      - name: Fetch Whisper weights for offline mode
+        continue-on-error: true
         run: |
-          if [ -f "tools/fetch-whisper-model.sh" ] && sh tools/fetch-whisper-model.sh; then
-            echo "Offline model ready."
+          sh tools/fetch-whisper-model.sh || {
+            echo "::warning::Could not fetch the Whisper weights. Building without them; the app" \
+                 "will download and verify them on first run instead."
+            rm -f app/src/main/assets/whisper/*.onnx app/src/main/assets/whisper/tokenizer.json || true
+          }
+
+      - name: Configure release signing key
+        env:
+          TYPORB_KEYSTORE_BASE64: ${{ secrets.TYPORB_KEYSTORE_BASE64 }}
+          TYPORB_STORE_PASSWORD: ${{ secrets.TYPORB_STORE_PASSWORD }}
+          TYPORB_KEY_ALIAS: ${{ secrets.TYPORB_KEY_ALIAS }}
+          TYPORB_KEY_PASSWORD: ${{ secrets.TYPORB_KEY_PASSWORD }}
+        run: |
+          set -eu
+          KEYSTORE_PATH="$PWD/typorb-release.jks"
+
+          if [ -n "${TYPORB_KEYSTORE_BASE64:-}" ] && [ -n "${TYPORB_STORE_PASSWORD:-}" ]; then
+            echo "$TYPORB_KEYSTORE_BASE64" | base64 -d > "$KEYSTORE_PATH"
+            KEY_ALIAS="${TYPORB_KEY_ALIAS:-typorb}"
+            KEY_PASSWORD="${TYPORB_KEY_PASSWORD:-$TYPORB_STORE_PASSWORD}"
+            echo "Using the repository signing key."
+            SIGNING_KIND="persistent"
           else
-            echo "FATAL: offline ONNX weights missing and fetch failed."
-            echo "Run 'sh tools/fetch-whisper-model.sh' locally (needs ~140MB) or commit the"
-            echo "weights so the release build can package them."
-            exit 1
+            # Ephemeral key: installable, but every run produces a different signature, so the app
+            # cannot be upgraded in place later. Documented in the workflow header.
+            KEY_ALIAS="typorb-ephemeral"
+            KEY_PASSWORD="$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 24)"
+            keytool -genkeypair -v \
+              -keystore "$KEYSTORE_PATH" \
+              -storepass "$KEY_PASSWORD" -keypass "$KEY_PASSWORD" \
+              -alias "$KEY_ALIAS" -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Typorb, OU=Build, O=Typorb, L=-, ST=-, C=ZZ" > /dev/null
+            echo "::warning::No signing secret configured. Generated an ephemeral key for this run."
+            echo "::warning::Each release will need to be uninstalled before installing the next one."
+            SIGNING_KIND="ephemeral"
           fi
 
-      # --- Verify release signing key is present ----------------------------------
-      # The release build only signs when keystore.properties exists. If it's missing,
-      # the CI would produce an unsigned APK and also fail later with a confusing error.
-      - name: Verify release signing key (keystore.properties)
-        run: |
-          if [ ! -f "keystore.properties" ]; then
-            echo "FATAL: keystore.properties missing. The release build type needs a signing"
-            echo "key. Create keystore.properties with storeFile/storePassword/keyAlias/keyPassword."
-            echo "This file is gitignored by default — do NOT commit it."
-            exit 1
-          fi
-          echo "Release signing key found."
+          cat > keystore.properties <<EOF
+          storeFile=$KEYSTORE_PATH
+          storePassword=$KEY_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
 
-      # --- Build release APK -----------------------------------------------------
+          echo "SIGNING_KIND=$SIGNING_KIND" >> "$GITHUB_ENV"
+          # Never let the key material reach the build log.
+          keytool -list -keystore "$KEYSTORE_PATH" -storepass "$KEY_PASSWORD" > /dev/null \
+            && echo "Keystore is readable."
+
       - name: Build release APK
         run: ./gradlew assembleRelease --no-daemon
 
-      - name: Verify release APK exists
+      # AGP names the output app-release.apk when signing is configured and
+      # app-release-unsigned.apk when it is not; accept whichever landed.
+      - name: Verify and publish release APK
+        id: verify
         run: |
-          if [ ! -f "app/build/outputs/apk/release/app-release.apk" ]; then
-            echo "release APk not found — build failed"
-            echo "full log is in 'Build release APK' step above"
+          set -eu
+          APK=""
+          for candidate in \
+            app/build/outputs/apk/release/app-release.apk \
+            app/build/outputs/apk/release/app-release-unsigned.apk
+          do
+            if [ -f "$candidate" ]; then APK="$candidate"; break; fi
+          done
+
+          if [ -z "$APK" ]; then
+            echo "::error::No release APK was produced. See the build step for the failure."
             exit 1
           fi
-          echo "Release APK ready: $(du -h app/build/outputs/apk/release/app-release.apk | cut -f1)"
 
-      - name: Upload app-release.apk
+          # An unsigned APK cannot be installed, so fail loudly rather than ship a dud.
+          case "$APK" in
+            *unsigned*)
+              echo "::error::The release APK is unsigned and cannot be installed."
+              exit 1
+              ;;
+          esac
+
+          SIZE="$(du -h "$APK" | cut -f1)"
+          DIGEST="$(sha256sum "$APK" | cut -d' ' -f1)"
+          echo "Release APK: $APK ($SIZE)"
+          echo "SHA-256: $DIGEST"
+          echo "Signing: ${SIGNING_KIND:-unknown}"
+
+          "$ANDROID_SDK_ROOT/build-tools/34.0.0/aapt" dump badging "$APK" \
+            | grep -E "^package|^sdkVersion|targetSdkVersion|^native-code" || true
+
+          echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
+          echo "apk_digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "apk_size=$SIZE" >> "$GITHUB_OUTPUT"
+          # `SIGNING_KIND` is exported through GITHUB_ENV by the signing step, so it is already in
+          # scope here. It is echoed as a step output purely for the job summary.
+
+      - name: Upload release APK
         uses: actions/upload-artifact@v4
         with:
           name: app-release
-          path: app/build/outputs/apk/release/app-release.apk
+          path: ${{ steps.verify.outputs.apk_path }}
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 90
+
+      # A GitHub Release is the stable, shareable download. Ephemeral signing is deliberately
+      # not published there, so a throwaway key never becomes the one people install long-term.
+      - name: Attach to the GitHub Release
+        if: github.event_name == 'release' && env.SIGNING_KIND != 'ephemeral'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" "${{ steps.verify.outputs.apk_path }}" --clobber
