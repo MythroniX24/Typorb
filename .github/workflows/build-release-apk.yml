@@ -164,12 +164,34 @@ jobs:
           echo "SHA-256: $DIGEST"
           echo "Signing: ${SIGNING_KIND:-unknown}"
 
-          "$ANDROID_SDK_ROOT/build-tools/34.0.0/aapt" dump badging "$APK" \
-            | grep -E "^package|^sdkVersion|targetSdkVersion|^native-code" || true
+          BADGING="$("$ANDROID_SDK_ROOT/build-tools/34.0.0/aapt" dump badging "$APK")"
+          echo "$BADGING" | grep -E "^package|^sdkVersion|targetSdkVersion|^native-code" || true
+
+          # The APK must name the commit it was built from. Without this check a release can be
+          # published from a stale artifact, which is exactly what happened once: versionCode and
+          # versionName were fixed strings, so a release went out containing the previous release's
+          # binary and nothing could tell the two apart. The build stamp now makes that detectable,
+          # and this makes it fatal.
+          EXPECTED="$GITHUB_SHA"
+          SHORT="$(printf '%s' "$EXPECTED" | cut -c1-7)"
+          # Tokenised rather than pattern-matched: pulling a capture group out through YAML, a shell
+          # quote and a regex costs three levels of backslash escaping and gets it wrong quietly.
+          # Splitting on whitespace makes `versionName=` its own token, and anchoring with ^ keeps
+          # it from matching `platformBuildVersionName=`.
+          STAMP="$(echo "$BADGING" | tr ' ' '\n' | grep -m1 '^versionName=' | cut -d= -f2 | tr -d "'")"
+          echo "Build stamp: $STAMP (expected to contain $SHORT)"
+          case "$STAMP" in
+            *"$SHORT"*) echo "::notice::APK build stamp matches commit $SHORT" ;;
+            *)
+              echo "::error::APK build stamp '$STAMP' does not contain commit $SHORT. Release artifact is stale."
+              exit 1
+              ;;
+          esac
 
           echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
           echo "apk_digest=$DIGEST" >> "$GITHUB_OUTPUT"
           echo "apk_size=$SIZE" >> "$GITHUB_OUTPUT"
+          echo "apk_stamp=$STAMP" >> "$GITHUB_OUTPUT"
           # `SIGNING_KIND` is exported through GITHUB_ENV by the signing step, so it is already in
           # scope here. It is echoed as a step output purely for the job summary.
 
@@ -181,11 +203,26 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-      # A GitHub Release is the stable, shareable download. Ephemeral signing is deliberately
-      # not published there, so a throwaway key never becomes the one people install long-term.
+      # A GitHub Release is the stable, shareable download, so a release event publishes the APK
+      # this run just built and verified.
+      #
+      # This replaces a manual `gh run download -n app-release` followed by `gh release upload`.
+      # That step was unsafe: given only an artifact name, gh resolves the newest run that has it,
+      # and a release was once published from the *previous* commit's build — a saved-state fix
+      # shipped as a byte-identical copy of the release before it, so the crash it was meant to fix
+      # could not have been fixed. Publishing from inside the run removes the ambiguity entirely:
+      # the artifact attached is always the one this job produced.
+      #
+      # Ephemeral signing still counts as publishable. The alternative was worse — a release with
+      # no APK at all — and the consequence is visible and recoverable (uninstall before upgrading),
+      # whereas a silently stale artifact is neither. Set the TYPORB_* secrets to sign properly.
       - name: Attach to the GitHub Release
-        if: github.event_name == 'release' && env.SIGNING_KIND != 'ephemeral'
+        if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "${GITHUB_REF_NAME}" "${{ steps.verify.outputs.apk_path }}" --clobber
+          set -eu
+          TAG="${GITHUB_REF_NAME}"
+          gh release upload "$TAG" \
+            "${{ steps.verify.outputs.apk_path }}#Typorb-${TAG}-release.apk" --clobber
+          echo "::notice::Attached ${{ steps.verify.outputs.apk_stamp }} to $TAG"

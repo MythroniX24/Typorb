@@ -24,6 +24,9 @@ class TyporbApp : Application() {
         // Installed before anything else runs. A crash during the rest of this method, or in any
         // component it constructs, is exactly the case that was previously invisible: the process
         // died with no trace on screen. Recording it lets the next launch explain itself.
+        // Recorded before the handler is installed, so the very first report already names the
+        // build it came from.
+        CrashLog.buildStamp = BuildConfig.BUILD_STAMP
         installCrashHandler()
         super.onCreate()
         container = TyporbContainer(this)

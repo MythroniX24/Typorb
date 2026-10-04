@@ -235,6 +235,7 @@ private fun DebugConsoleCard(onOpenAccessibility: () -> Unit) {
         Hairline()
         Spacer(modifier = Modifier.height(10.dp))
 
+        DebugRow("Build", com.typorb.BuildConfig.BUILD_STAMP)
         DebugRow("Accessibility service", yesNo(diagnostics.serviceConnected))
         DebugRow("Events received", diagnostics.eventCount.toString())
         DebugRow(

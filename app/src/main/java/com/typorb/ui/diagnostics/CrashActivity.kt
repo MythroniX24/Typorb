@@ -157,6 +157,14 @@ private fun CrashScreen(
                 )
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
+                    // First, because it decides whether the rest of the report is even about the
+                    // build the user thinks they are running.
+                    text = "Build: ${CrashLog.buildStamp}",
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = TyporbPalette.Danger.copy(alpha = 0.85f),
+                )
+                Text(
                     text = "Thread: ${report.threadName}",
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace,

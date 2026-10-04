@@ -16,6 +16,55 @@ val keystoreProperties = Properties().apply {
     }
 }
 
+/**
+ * Build identity.
+ *
+ * Every APK carries the commit it was built from, so two builds can always be told apart.
+ *
+ * This is not decoration. `versionCode` and `versionName` used to be the fixed strings `1` and
+ * `1.0.0`, so a release once went out containing the *previous* release's binary and nothing in the
+ * app, the file name or the manifest could reveal it — the mismatch was invisible to everyone,
+ * including the person who published it. A build that cannot identify itself cannot be verified.
+ */
+/**
+ * Runs a git command, or returns null when git is missing or this is not a repository.
+ *
+ * `providers.exec` rather than `ProcessBuilder`: this project enables Gradle's configuration cache,
+ * which rejects a plain external process started at configuration time with
+ * "Starting an external process ... is unsupported".
+ */
+fun gitOutput(vararg args: String): String? = runCatching {
+    providers.exec { commandLine("git", *args) }
+        .standardOutput.asText.get()
+        .trim()
+        .takeIf { it.isNotEmpty() }
+}.getOrNull()
+
+val gitSha: String =
+    System.getenv("GITHUB_SHA")?.take(7) ?: gitOutput("rev-parse", "--short=7", "HEAD") ?: "nogit"
+
+/**
+ * Follows the release tag when the build was triggered by one, so a release APK can never claim to
+ * be the version before it, and always ends in the commit it came from.
+ *
+ * The commit is part of the version name on purpose: `aapt dump badging` then reports it, which is
+ * what lets the release workflow prove the artifact it is about to publish was built from the commit
+ * being released. With a fixed version string there was nothing to check, and a stale APK was
+ * published as a new release without anyone being able to tell.
+ */
+val typorbVersionName: String = run {
+    val base = System.getenv("GITHUB_REF_NAME")
+        ?.takeIf { it.startsWith("v") }
+        ?.removePrefix("v")
+        ?: "1.4.0-dev"
+    "$base+$gitSha"
+}
+
+/** Monotonic and distinct per build: the CI run number, or the commit count for local builds. */
+val typorbVersionCode: Int = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
+    ?: gitOutput("rev-list", "--count", "HEAD")?.toIntOrNull()
+    ?: 1
+
 android {
     namespace = "com.typorb"
     compileSdk = 34
@@ -24,8 +73,13 @@ android {
         applicationId = "com.typorb"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = typorbVersionCode
+        versionName = typorbVersionName
+
+        // Surfaced in the debug console and on the crash screen, so "which build am I running?"
+        // is answered by the app itself rather than by guessing.
+        buildConfigField("String", "BUILD_SHA", "\"$gitSha\"")
+        buildConfigField("String", "BUILD_STAMP", "\"$typorbVersionName\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
