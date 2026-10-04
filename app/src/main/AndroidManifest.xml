@@ -6,17 +6,21 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.VIBRATE" />
+
     <!--
-      SYSTEM_ALERT_WINDOW is deliberately NOT declared.
+      The orb prefers TYPE_ACCESSIBILITY_OVERLAY, which the accessibility grant already covers and
+      which needs no permission at all.
 
-      The overlay window is TYPE_ACCESSIBILITY_OVERLAY, which is granted by the accessibility
-      service itself and needs no permission. Nothing in the app opens a TYPE_APPLICATION_OVERLAY
-      window, so the permission was declared but never used.
+      This permission exists for the fallback path only: some OEM builds refuse the accessibility
+      window type outright, and TYPE_APPLICATION_OVERLAY is the documented way through. It was
+      removed in an earlier revision on the grounds that nothing used it — the debug console then
+      showed both the orb window and the IME probe being refused at addView() while focus and the
+      keyboard were both detected correctly, which is exactly the case this covers.
 
-      Beyond being dead weight, pairing SYSTEM_ALERT_WINDOW with an AccessibilityService is a
-      well-known Play Protect heuristic — the exact shape of the accessibility-abuse pattern — and
-      it made sideloading harder for no benefit.
+      The app still works with this denied. It is only read to decide whether the fallback window
+      type may be attempted, and the debug console names it as the remedy when it is the blocker.
     -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <uses-feature
         android:name="android.hardware.microphone"

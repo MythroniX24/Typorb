@@ -27,8 +27,18 @@ import kotlinx.coroutines.withTimeoutOrNull
 data class PermissionStatus(
     val accessibilityService: Boolean,
     val microphonePermission: Boolean,
+    /**
+     * Only needed as a fallback when the OEM build refuses the accessibility window type, so it is
+     * reported but never gates [ready].
+     */
+    val overlayPermission: Boolean,
 ) {
-    /** The orb draws a TYPE_ACCESSIBILITY_OVERLAY window, which the accessibility grant covers. */
+    /**
+     * The orb draws a `TYPE_ACCESSIBILITY_OVERLAY` window, which the accessibility grant covers.
+     *
+     * "Display over other apps" is therefore not required — it exists purely so the orb has a
+     * second window type to fall back to when a device's WindowManager rejects the first.
+     */
     val ready: Boolean get() = accessibilityService
 }
 
@@ -49,6 +59,7 @@ sealed interface ApiKeyCheck {
 enum class PermissionTarget {
     ACCESSIBILITY,
     MICROPHONE,
+    OVERLAY,
 }
 
 /**
@@ -122,6 +133,7 @@ class TyporbViewModel(application: Application) : AndroidViewModel(application) 
         return PermissionStatus(
             accessibilityService = Permissions.isAccessibilityServiceEnabled(context),
             microphonePermission = Permissions.isMicrophonePermissionGranted(context),
+            overlayPermission = Permissions.isOverlayPermissionGranted(context),
         )
     }
 
@@ -135,6 +147,7 @@ class TyporbViewModel(application: Application) : AndroidViewModel(application) 
         val intent = when (target) {
             PermissionTarget.ACCESSIBILITY -> Permissions.accessibilitySettingsIntent()
             PermissionTarget.MICROPHONE -> Permissions.appDetailsIntent(context)
+            PermissionTarget.OVERLAY -> Permissions.overlaySettingsIntent(context)
         }
         runCatching { context.startActivity(intent) }
             .onFailure { Log.w("TyporbViewModel", "Could not open ${target.name} settings", it) }

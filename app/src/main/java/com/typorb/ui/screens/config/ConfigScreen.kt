@@ -29,6 +29,7 @@ import androidx.compose.material.icons.rounded.Accessibility
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Visibility
@@ -249,8 +250,35 @@ private fun DebugConsoleCard(onOpenAccessibility: () -> Unit) {
         DebugRow("Keyboard (inset signal)", "${diagnostics.imeInsetPx} px")
         DebugRow("IME package", diagnostics.imePackage?.substringAfterLast('.') ?: "unknown")
         DebugRow("Overlay window", yesNo(diagnostics.overlayVisible))
+        DebugRow("Overlay window type", diagnostics.overlayWindowType ?: "—")
         DebugRow("Inset probe", if (diagnostics.probeAttached) "attached" else "not attached")
         DebugRow("Last check", lastCheckLabel(diagnostics.lastEvaluationAtMs))
+
+        // The reason the window could not be created, shown verbatim. Without this the console can
+        // only say "not showing", which is the same information the user already had.
+        diagnostics.overlayWindowError?.let { error ->
+            Spacer(modifier = Modifier.height(10.dp))
+            Text(
+                text = "ORB WINDOW ERROR",
+                fontSize = 10.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = TyporbPalette.Danger,
+            )
+            Spacer(modifier = Modifier.height(3.dp))
+            Text(
+                text = error,
+                fontSize = 11.sp,
+                color = TyporbPalette.TextSecondary,
+            )
+        }
+        diagnostics.probeWindowError?.let { error ->
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = "Probe window: $error",
+                fontSize = 11.sp,
+                color = TyporbPalette.TextMuted,
+            )
+        }
 
         if (diagnostics.breadcrumbs.isNotEmpty()) {
             Spacer(modifier = Modifier.height(10.dp))
@@ -694,8 +722,8 @@ private fun PermissionCard(
         )
         Spacer(modifier = Modifier.height(4.dp))
         Text(
-            text = "Only the accessibility service is strictly required. Turning one off opens the " +
-                "system screen where it can be revoked.",
+            text = "Only the accessibility service is required. \"Display over other apps\" is an " +
+                "optional fallback for devices that refuse the accessibility overlay window.",
             fontSize = 12.sp,
             color = TyporbPalette.TextSecondary,
         )
@@ -708,6 +736,14 @@ private fun PermissionCard(
             subtitle = "Finds text fields and types into them",
             granted = permissions.accessibilityService,
             onToggle = { onOpen(PermissionTarget.ACCESSIBILITY) },
+        )
+
+        PermissionSwitchRow(
+            icon = Icons.Rounded.Layers,
+            title = "Display over other apps",
+            subtitle = "Optional fallback if the orb will not appear",
+            granted = permissions.overlayPermission,
+            onToggle = { onOpen(PermissionTarget.OVERLAY) },
         )
         PermissionSwitchRow(
             icon = Icons.Rounded.Mic,

@@ -32,12 +32,24 @@ class ImeProbeController(
 ) {
 
     private val appContext = context.applicationContext
-    private val windowManager = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    /**
+     * The service's own [WindowManager], not the application context's.
+     *
+     * `TYPE_ACCESSIBILITY_OVERLAY` is authorised per accessibility service, and the platform
+     * resolves that grant from the context the [WindowManager] came from. An application-context
+     * instance is refused with a `BadTokenException`, which is why this probe reported "not
+     * attached" on a device where the orb was correctly detected but never displayed.
+     */
+    private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
     private var view: View? = null
 
     /** `true` when the probe window is attached and therefore reporting. */
     val isAttached: Boolean get() = view != null
+
+    /** Why [start] failed, for the debug console. */
+    var lastError: String? = null
+        private set
 
     /**
      * Adds the probe window. Safe to call more than once; only the first call does anything.
@@ -80,7 +92,11 @@ class ImeProbeController(
             view = probe
             // Insets are only dispatched to a freshly attached view when asked for.
             ViewCompat.requestApplyInsets(probe)
-        }.onFailure { Log.w(TAG, "IME probe window unavailable; inset signal lost", it) }
+        }.onSuccess { lastError = null }
+            .onFailure { error ->
+                Log.w(TAG, "IME probe window unavailable; inset signal lost", error)
+                lastError = "${error::class.java.simpleName}: ${error.message}"
+            }
             .isSuccess
     }
 

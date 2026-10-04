@@ -57,6 +57,51 @@ class OrbDiagnosisTest {
     }
 
     @Test
+    fun `an addView error is named verbatim and points at the fallback grant`() {
+        // The Redmi 8A case: focus and keyboard both detected, orb still absent. The only way to
+        // explain that from the outside was the addView failure, so it must lead the verdict.
+        val d = OrbDiagnostics(
+            serviceConnected = true,
+            eventCount = 618,
+            editableFieldFocused = true,
+            imeVisible = true,
+            imeHeightPx = 2283,
+            overlayVisible = false,
+            overlayWindowError = "BadTokenException: token not valid",
+            overlayPermissionGranted = false,
+        )
+        assertEquals("Overlay window not added", d.headline())
+        assertTrue(d.detail().contains("BadTokenException: token not valid"))
+        assertTrue(d.detail().contains("Display over other apps"))
+    }
+
+    @Test
+    fun `when both window types were tried the grant is not suggested again`() {
+        val d = OrbDiagnostics(
+            serviceConnected = true,
+            eventCount = 12,
+            editableFieldFocused = true,
+            imeVisible = true,
+            overlayVisible = false,
+            overlayWindowError = "BadTokenException: token not valid",
+            overlayPermissionGranted = true,
+        )
+        assertTrue(d.detail().contains("will not help further"))
+    }
+
+    @Test
+    fun `a probe failure is reported separately from the orb failure`() {
+        val d = OrbDiagnostics(
+            serviceConnected = true,
+            probeAttached = false,
+            probeWindowError = "BadTokenException: token not valid",
+        )
+        val report = d.asReport(nowMs = 1_000L)
+        assertTrue(report.contains("probe addView err : BadTokenException"))
+        assertTrue(report.contains("IME probe window  : not attached"))
+    }
+
+    @Test
     fun `focus and keyboard but no window means WindowManager refused it`() {
         val d = OrbDiagnostics(
             serviceConnected = true,

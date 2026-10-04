@@ -19,6 +19,7 @@ import com.typorb.model.OverlayUiState
 import com.typorb.model.ProcessingEngine
 import com.typorb.overlay.ImeProbeController
 import com.typorb.overlay.OverlayController
+import com.typorb.util.Permissions
 import com.typorb.util.Haptics
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -190,6 +191,9 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
             settings = container.settingsRepository.settings,
             onTap = ::onPillTapped,
             onImeInsetChanged = imeDetector::reportInsetFallback,
+            // "Display over other apps" is optional. It only decides whether a second window type
+            // may be attempted when the platform refuses the accessibility one.
+            canUseApplicationOverlay = { Permissions.isOverlayPermissionGranted(this) },
         )
 
         // Attached before the first event can arrive, so the inset signal is never waiting on the
@@ -203,6 +207,8 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
             it.copy(
                 imePackage = imeDetector.currentImePackage,
                 probeAttached = probeAttached,
+                probeWindowError = probe.lastError,
+                overlayPermissionGranted = Permissions.isOverlayPermissionGranted(this),
             )
         }
         Log.i(TAG, "IME probe window attached=$probeAttached ime=${imeDetector.currentImePackage}")
@@ -295,6 +301,12 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
                 imeInsetPx = insetPx,
                 windowsSeen = windowsSeen,
                 imeWindowFound = imeWindowFound,
+                overlayWindowError = if (::overlay.isInitialized) overlay.lastWindowError else null,
+                overlayWindowType = if (::overlay.isInitialized) {
+                    overlay.windowTypeInUse?.let { windowTypeName(it) }
+                } else {
+                    null
+                },
                 lastEvaluationAtMs = System.currentTimeMillis(),
             )
         }
@@ -404,6 +416,13 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
         val metrics = android.util.DisplayMetrics()
         windowManager.defaultDisplay.getRealMetrics(metrics)
         metrics.heightPixels
+    }
+
+    /** Readable window-type name for the debug console. */
+    private fun windowTypeName(type: Int): String = when (type) {
+        WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY -> "accessibility overlay"
+        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY -> "application overlay"
+        else -> "type $type"
     }
 
     private companion object {

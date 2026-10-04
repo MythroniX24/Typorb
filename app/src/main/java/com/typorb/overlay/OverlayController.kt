@@ -45,10 +45,22 @@ class OverlayController(
     private val onTap: () -> Unit,
     /** Reports `WindowInsetsCompat.Type.ime()` observations as an IME-height fallback signal. */
     private val onImeInsetChanged: (Int) -> Unit,
+    /** Whether the OEM fallback window type may be used, i.e. "Display over other apps" is granted. */
+    private val canUseApplicationOverlay: () -> Boolean,
 ) {
 
     private val appContext = context.applicationContext
-    private val windowManager = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    /**
+     * The service's own [WindowManager], deliberately *not* the application context's.
+     *
+     * A `TYPE_ACCESSIBILITY_OVERLAY` window is authorised by the accessibility service that adds
+     * it, and WindowManager resolves that grant from the context the instance came from. Building
+     * it from `applicationContext` therefore makes `addView` fail with a `BadTokenException` on
+     * stock Android and on MIUI, which is precisely what the debug console on a Redmi 8A reported:
+     * focus detected, keyboard detected, and yet the orb never appeared because both this window
+     * and the IME probe were being rejected.
+     */
+    private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val density = appContext.resources.displayMetrics.density
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -56,6 +68,14 @@ class OverlayController(
     private var params: WindowManager.LayoutParams? = null
     private var keyboardHeightPx: Int = 0
     private var removePending: Runnable? = null
+
+    /** Why the last [show] failed, surfaced verbatim in the Settings debug console. */
+    var lastWindowError: String? = null
+        private set
+
+    /** Which window type actually got the orb on screen, or `null` while hidden. */
+    var windowTypeInUse: Int? = null
+        private set
 
     val isShowing: Boolean get() = view != null
 
@@ -112,31 +132,63 @@ class OverlayController(
             }
         }
 
-        val layoutParams = WindowManager.LayoutParams(
-            dp(48) + padding * 2,
-            dp(PILL_HEIGHT_DP) + padding * 2,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT,
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = dp(16)
-            y = 0
-        }
+        // Preferred type first, then the grant-gated fallback. Both are attempted rather than
+        // choosing up front, because which one the platform will accept is only knowable by trying:
+        // an OEM build can reject the accessibility type outright.
+        var failure: Throwable? = null
+        for (type in candidateWindowTypes()) {
+            val layoutParams = WindowManager.LayoutParams(
+                dp(48) + padding * 2,
+                dp(PILL_HEIGHT_DP) + padding * 2,
+                type,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT,
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                x = dp(16)
+                y = 0
+            }
 
-        return runCatching { windowManager.addView(composeView, layoutParams) }
-            .onSuccess {
+            val attempt = runCatching { windowManager.addView(composeView, layoutParams) }
+            if (attempt.isSuccess) {
                 view = composeView
                 params = layoutParams
+                windowTypeInUse = type
+                lastWindowError = null
                 applyLayout(state.value)
                 animateIn(composeView)
+                Log.i(TAG, "Overlay window added with type=$type")
+                return true
             }
-            .onFailure { error ->
-                Log.w(TAG, "Could not add the overlay window", error)
-            }
-            .isSuccess
+            failure = attempt.exceptionOrNull()
+            Log.w(TAG, "addView failed for type=$type", failure)
+        }
+
+        lastWindowError = failure?.let { "${it::class.java.simpleName}: ${it.message}" }
+        windowTypeInUse = null
+        return false
+    }
+
+    /**
+     * Window types to try, in order.
+     *
+     * The accessibility type is the correct one and needs no user grant. The application type is
+     * only offered when "Display over other apps" has actually been granted, so a user who never
+     * grants it is never blocked by it and one who does gets a working orb on an OEM build that
+     * refuses the first.
+     */
+    private fun candidateWindowTypes(): List<Int> = buildList {
+        add(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY)
+        if (canUseApplicationOverlay()) {
+            add(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            } else {
+                @Suppress("DEPRECATION")
+                WindowManager.LayoutParams.TYPE_PHONE
+            })
+        }
     }
 
     /** Keyboard height changed while the pill is visible (IME show/hide animation). */
@@ -148,6 +200,7 @@ class OverlayController(
     /** Removes the pill, animating it out first. */
     fun hide() {
         val composeView = view ?: return
+        windowTypeInUse = null
         val hideRunnable = Runnable {
             if (view === composeView) {
                 runCatching { windowManager.removeView(composeView) }

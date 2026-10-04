@@ -39,6 +39,19 @@ data class OrbDiagnostics(
     val overlayVisible: Boolean = false,
     /** Whether the always-on invisible IME probe window could be attached. */
     val probeAttached: Boolean = false,
+    /**
+     * The verbatim `addView` failure for the orb window, when there was one.
+     *
+     * This is the single most useful field on the screen: focus and keyboard detection can both be
+     * correct while the orb still never appears, and the only evidence of why is this string.
+     */
+    val overlayWindowError: String? = null,
+    /** The same, for the IME probe window. */
+    val probeWindowError: String? = null,
+    /** Which window type the orb actually got, as a readable name. */
+    val overlayWindowType: String? = null,
+    /** Whether "Display over other apps" is granted, i.e. the fallback type is available. */
+    val overlayPermissionGranted: Boolean = false,
     val lastEvaluationAtMs: Long = 0L,
     /** Total accessibility events delivered, to distinguish "silent" from "no events". */
     val eventCount: Long = 0,
@@ -70,6 +83,10 @@ data class OrbDiagnostics(
         appendLine("keyboard visible  : $imeVisible")
         appendLine("IME inset signal  : ${imeInsetPx}px")
         appendLine("IME probe window  : ${if (probeAttached) "attached" else "not attached"}")
+        appendLine("orb window type   : ${overlayWindowType ?: "—"}")
+        appendLine("overlay perm      : ${if (overlayPermissionGranted) "granted" else "not granted"}")
+        overlayWindowError?.let { appendLine("orb addView error : $it") }
+        probeWindowError?.let { appendLine("probe addView err : $it") }
         appendLine("field focused     : $editableFieldFocused")
         appendLine("orb on screen     : $overlayVisible")
         val age = if (lastEvaluationAtMs == 0L) {
@@ -117,6 +134,18 @@ object OrbDiagnosis {
             !d.imeWindowFound -> "No window is tagged as a keyboard."
             else -> "A keyboard window exists but measured ${d.imeHeightPx}px."
         }
+        // A window error outranks the plain "refused" wording because it names the actual cause,
+        // and because focus plus keyboard both being correct while the orb is hidden is exactly
+        // the case that used to be impossible to explain from the outside.
+        !d.overlayVisible && d.overlayWindowError != null ->
+            "WindowManager rejected the orb window: ${d.overlayWindowError}" +
+                if (d.overlayPermissionGranted) {
+                    " Granting \"Display over other apps\" will not help further; both window " +
+                        "types were already tried."
+                } else {
+                    " Grant \"Display over other apps\" in Settings so the orb can retry with the " +
+                        "standard overlay window."
+                }
         !d.overlayVisible -> "WindowManager refused the overlay window."
         else -> "All checks pass — keyboard at ${d.imeHeightPx}px."
     }
