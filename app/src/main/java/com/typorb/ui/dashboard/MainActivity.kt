@@ -1,5 +1,6 @@
 package com.typorb.ui.dashboard
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -10,8 +11,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
+import com.typorb.diagnostics.CrashStore
 import com.typorb.ui.TyporbAppRoot
 import com.typorb.ui.TyporbViewModel
+import com.typorb.ui.diagnostics.CrashActivity
 import com.typorb.ui.theme.TyporbPalette
 import com.typorb.ui.theme.TyporbTheme
 
@@ -29,6 +32,18 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+
+        // A stored crash outranks the dashboard: showing the home screen over the top of an error the
+        // user never saw would hide the only useful diagnostic the app captured.
+        if (CrashStore(this).peek() != null) {
+            startActivity(
+                Intent(this, CrashActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+            finish()
+            return
+        }
+
         setContent {
             TyporbTheme {
                 Surface(

@@ -47,6 +47,18 @@
             </intent-filter>
         </activity>
 
+        <!--
+          Shows the last captured crash. Not exported and not launchable from the launcher: it is
+          only ever entered from MainActivity when CrashStore holds an unread report, so a user
+          cannot end up stranded here.
+        -->
+        <activity
+            android:name=".ui.diagnostics.CrashActivity"
+            android:exported="false"
+            android:label="Typorb error"
+            android:theme="@style/Theme.Typorb"
+            android:launchMode="singleTask" />
+
         <service
             android:name=".service.TyporbAccessibilityService"
             android:exported="true"

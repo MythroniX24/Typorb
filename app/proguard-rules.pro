@@ -45,6 +45,12 @@
 -keep class com.typorb.service.TyporbAccessibilityService { *; }
 -keep class com.typorb.TyporbApp { *; }
 
+# Crash reporting. The handler must survive stripping, and the stack trace it renders is the whole
+# reason the screen exists, so keep exception names intact for readable reports.
+-keep class com.typorb.diagnostics.** { *; }
+-keep class com.typorb.ui.diagnostics.** { *; }
+-keepattributes SourceFile,LineNumberTable,StackTrace,Signature,Exceptions
+
 # Enum valueOf/values are used for settings and context modes persisted by name.
 -keepclassmembers enum com.typorb.** {
     public static **[] values();
