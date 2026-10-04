@@ -1,0 +1,96 @@
+package com.typorb
+// Production release CI workflow.
+//
+// Builds a minified, ProGuarded, signed release APK and uploads it as a GitHub artifact.
+// Requires `keystore.properties` (absolute paths, never committed) plus a `release` signing
+// config in `app/build.gradle.kts` — both already present by default.
+//
+// Setup:
+//   1. Create a proper release keystore (.jks/.keystore) and `keystore.properties` with:
+//        storeFile=/path/to/typorb-release.jks
+//        storePassword=<strong password>
+//        keyAlias=typorb
+//        keyPassword=<same as key password>
+//   2. Commit keystore.properties to your repository secrets / or keep it out of git
+//      (the file is already gitignored).
+//   3. Push to `main` — the workflow triggers automatically.
+//   4. Download the artifact from the Actions tab.
+//
+// Note on assets:
+//   The offline ONNX weights are gitignored for portability. To build a release:
+//     sh tools/fetch-whisper-model.sh   # needs network + ~140MB of space
+//   Once fetched, they live in `app/src/main/assets/whisper/` and are packaged into the APK.
+//   (The CI artifact you already downloaded is the debug build and ships with the weights.)
+
+name: Build Release APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Never cancel a build that has already produced an artifact.
+concurrency:
+  group: build-release-apk-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Assemble release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # The ubuntu-latest image already ships the SDK and cmdline-tools. We deliberately do
+      # not use `android-actions/setup-android` here: its `sdkmanager tools` call fails on
+      # current runners because the legacy `tools` package was removed from the SDK repository.
+      - name: Set up Android SDK
+        run: |
+          SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          SDKMANAGER="$(ls -d "$SDK_ROOT"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -1)"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+
+      # Caches the Gradle distribution and all dependency artifacts.
+      - name: Set up Gradle (with dependency caching)
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Grant execute permission to ./gradlew
+        run: chmod +x ./gradlew
+
+      # Pre-fetch offline model weights so the release APK is self-contained (~140MB).
+      # The .onnx / tokenizer.json files are gitignored, so a clean checkout has no weights.
+      - name: Pre-fetch Whisper model (offline mode)
+        run: sh tools/fetch-whisper-model.sh
+        continue-on-error: true
+
+      - name: Build release APK
+        run: ./gradlew assembleRelease --no-daemon
+
+      - name: Verify release APK exists
+        run: |
+          if [ ! -f "app/build/outputs/apk/release/app-release.apk" ]; then
+            echo "release APK not found — build failed"
+            exit 1
+          fi
+          echo "Release APK ready: $(du -h app/build/outputs/apk/release/app-release.apk | cut -f1)"
+
+      - name: Upload app-release.apk
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release
+          path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 30
