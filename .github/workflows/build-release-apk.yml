@@ -36,6 +36,12 @@ on:
   release:
     types: [published]
 
+# `gh release upload` writes a release asset, which the default token cannot do: without this
+# block the attach step fails with "HTTP 403: Resource not accessible by integration". Scoped to
+# contents only — the job needs nothing else.
+permissions:
+  contents: write
+
 concurrency:
   group: build-release-apk-${{ github.ref }}
   cancel-in-progress: false
