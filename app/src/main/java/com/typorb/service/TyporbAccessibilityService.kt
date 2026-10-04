@@ -164,6 +164,7 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
         stopImeWatch()
         imeProbe?.stop()
         imeProbe = null
+        if (::overlay.isInitialized) overlay.dispose()
         OrbDiagnosticsBus.update { it.copy(serviceConnected = false, probeAttached = false) }
         OrbDiagnosticsBus.note("service destroyed")
         if (::overlay.isInitialized) hideOverlay()

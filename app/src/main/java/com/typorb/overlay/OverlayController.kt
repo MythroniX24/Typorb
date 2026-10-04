@@ -17,6 +17,8 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.setViewTreeLifecycleOwner
+import androidx.savedstate.setViewTreeSavedStateRegistryOwner
+import androidx.lifecycle.setViewTreeViewModelStoreOwner
 import com.typorb.data.TyporbSettings
 import com.typorb.model.OverlayUiState
 import com.typorb.service.KeyboardGeometry
@@ -32,9 +34,12 @@ import kotlinx.coroutines.flow.StateFlow
  * capsules — so the WindowManager position is always exact and never depends on a measure pass.
  * Right edge is pinned 16dp from the display edge and the bottom sits 16dp above the keyboard.
  *
- * Only a [LifecycleOwner] is attached to the view tree: the overlay composes no `rememberSaveable`
- * state, so no `SavedStateRegistryOwner` is needed (and one cannot be constructed outside the
- * framework anyway, since `SavedStateRegistry`'s constructor is internal).
+ * All three view-tree owners Compose requires are attached: [LifecycleOwner], a
+ * [androidx.savedstate.SavedStateRegistryOwner] and a [androidx.lifecycle.ViewModelStoreOwner].
+ * Only the first is available from the accessibility service, so the other two come from
+ * [OverlayStateOwner]. The registry requirement is unconditional — it comes from
+ * `ComposeView.onAttachedToWindow`, not from whether any composable actually saves state — so an
+ * overlay built without one crashes the moment the window is attached.
  */
 class OverlayController(
     context: Context,
@@ -69,6 +74,13 @@ class OverlayController(
     private var keyboardHeightPx: Int = 0
     private var removePending: Runnable? = null
 
+    /**
+     * Supplies the saved-state and view-model owners for the overlay window, shared by every
+     * ComposeView this controller creates so a detach/reattach cycle cannot end up with a window
+     * pointing at a disposed owner.
+     */
+    private val stateOwner = OverlayStateOwner(lifecycleOwner)
+
     /** Why the last [show] failed, surfaced verbatim in the Settings debug console. */
     var lastWindowError: String? = null
         private set
@@ -98,6 +110,10 @@ class OverlayController(
 
         val composeView = ComposeView(appContext).apply {
             setViewTreeLifecycleOwner(lifecycleOwner)
+            // Both of these are read by ComposeView.onAttachedToWindow and are not optional. The
+            // service supplies only the lifecycle owner, so the rest come from OverlayStateOwner.
+            setViewTreeSavedStateRegistryOwner(stateOwner)
+            setViewTreeViewModelStoreOwner(stateOwner)
             setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
             // Observes the real IME height where the platform is cooperative about insets.
             ViewCompat.setOnApplyWindowInsetsListener(this) { _, insets ->
@@ -195,6 +211,11 @@ class OverlayController(
     fun updateKeyboardHeight(imeHeightPx: Int) {
         keyboardHeightPx = imeHeightPx
         if (view != null) applyLayout(state.value)
+    }
+
+    /** Releases the owners backing the overlay. Call when the service itself goes away. */
+    fun dispose() {
+        stateOwner.dispose()
     }
 
     /** Removes the pill, animating it out first. */
