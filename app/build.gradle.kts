@@ -157,6 +157,9 @@ dependencies {
     // but those are not transitive from the rest of the app, so release builds fail.
     implementation("com.google.api-client:google-api-client:1.32.2")
     implementation("joda-time:joda-time:2.12.5")
+    // joda-time's DateTimeZone carries @FromString/@ToString from joda-convert, which does not
+    // arrive transitively — R8 aborts on the absent annotation classes without it.
+    implementation("org.joda:joda-convert:2.2.3")
 
     testImplementation("junit:junit:4.13.2")
     // Android provides org.json at runtime; unit tests need it on the JVM classpath too.
