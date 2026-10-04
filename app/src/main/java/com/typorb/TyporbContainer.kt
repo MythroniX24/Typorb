@@ -58,9 +58,21 @@ class TyporbContainer(context: Context) {
         selectedModelVariant = variant
     }
 
+    private val groqApi: com.typorb.cloud.groq.GroqApi by lazy { GroqClientFactory.groqApi() }
+
+    /**
+     * Checks a Groq key by listing models, which proves the credential is live without spending a
+     * transcription request.
+     *
+     * @return the number of models the key can reach, or the failure reason.
+     */
+    suspend fun verifyApiKey(apiKey: String): Result<Int> = runCatching {
+        groqApi.listModels("Bearer ${apiKey.trim()}").data.size
+    }
+
     private val cloudEngine: TextProcessingEngine by lazy {
         CloudTextProcessor(
-            api = GroqClientFactory.groqApi(),
+            api = groqApi,
             apiKeyProvider = { settingsRepository.current().apiKey },
             transcribeModel = BuildConfig.GROQ_TRANSCRIBE_MODEL,
             chatModel = BuildConfig.GROQ_CHAT_MODEL,

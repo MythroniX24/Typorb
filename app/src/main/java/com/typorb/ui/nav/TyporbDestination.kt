@@ -1,9 +1,9 @@
 package com.typorb.ui.nav
 
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.ListAlt
-import androidx.compose.material.icons.rounded.Home
-import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.automirrored.rounded.Notes
+import androidx.compose.material.icons.rounded.DashboardCustomize
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.ui.graphics.vector.ImageVector
 
 /** Every screen the single activity can show. */
@@ -27,9 +27,9 @@ enum class TyporbDestination(
     val label: String,
     val icon: ImageVector,
 ) {
-    CONTROL(Routes.CONTROL, "Control", Icons.Rounded.Home),
-    VAULT(Routes.VAULT, "Transcripts", Icons.AutoMirrored.Rounded.ListAlt),
-    SETTINGS(Routes.SETTINGS, "Settings", Icons.Rounded.Settings);
+    CONTROL(Routes.CONTROL, "Control", Icons.Rounded.DashboardCustomize),
+    VAULT(Routes.VAULT, "Transcripts", Icons.AutoMirrored.Rounded.Notes),
+    SETTINGS(Routes.SETTINGS, "Settings", Icons.Rounded.Tune);
 
     companion object {
         /** Tabs shown on the floating bar — onboarding is deliberately excluded. */

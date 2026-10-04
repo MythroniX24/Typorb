@@ -8,7 +8,6 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,9 +21,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -32,7 +30,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -43,23 +42,22 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import com.typorb.ui.components.GlassSurface
+import com.typorb.ui.components.pressScale
 import com.typorb.ui.nav.Routes
 import com.typorb.ui.nav.TyporbDestination
 import com.typorb.ui.screens.config.ConfigScreen
 import com.typorb.ui.screens.control.ControlScreen
 import com.typorb.ui.screens.onboarding.OnboardingScreen
 import com.typorb.ui.screens.vault.VaultScreen
-import com.typorb.ui.theme.TyporbGradients
+import com.typorb.ui.theme.TyporbElevation
 import com.typorb.ui.theme.TyporbPalette
 import com.typorb.ui.theme.TyporbShapes
 
 /**
- * The single activity's content: an animated [NavHost] plus a floating frosted-glass bottom bar.
+ * The single activity's content: an animated [NavHost] plus a floating pill-shaped bottom bar.
  *
- * The bar is overlaid rather than placed in a `Scaffold` bottomBar slot so it floats above the
- * content with a margin, which is the look the design system asks for. Screens therefore pad their
- * own bottom inset ([BOTTOM_BAR_CLEARANCE]).
+ * The bar is overlaid rather than placed in a `Scaffold` bottomBar slot so it hovers above the
+ * content with a margin. Screens therefore pad their own bottom inset ([BOTTOM_BAR_CLEARANCE]).
  */
 @Composable
 fun TyporbAppRoot(
@@ -70,16 +68,18 @@ fun TyporbAppRoot(
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val permissions by viewModel.permissions.collectAsStateWithLifecycle()
 
-    // Re-read permission state whenever the app comes back to the foreground: the user just left to a
+    // Re-read permission state whenever the app returns to the foreground: the user just left for a
     // system settings screen to grant or revoke something.
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         viewModel.refreshPermissions()
     }
 
-    // The gate is a first-launch screen; once dismissed it never returns, so a user who later
-    // revokes a permission is not trapped re-granting it on every visit.
-    val startDestination =
+    // Captured once, deliberately not read from `settings` on every recomposition: finishing
+    // onboarding flips `onboardingComplete`, and a NavHost whose startDestination changes rebuilds
+    // its whole graph — which would reset the back stack underneath the navigate() call below.
+    val startDestination = remember {
         if (settings.onboardingComplete) Routes.CONTROL else Routes.ONBOARDING
+    }
 
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
@@ -103,9 +103,7 @@ fun TyporbAppRoot(
             composable(Routes.ONBOARDING) {
                 OnboardingScreen(
                     permissions = permissions,
-                    onOpenPermission = { target ->
-                        viewModel.launchPermission(context, target)
-                    },
+                    onOpenPermission = { target -> viewModel.launchPermission(context, target) },
                     onFinish = {
                         viewModel.completeOnboarding()
                         navController.navigate(Routes.CONTROL) {
@@ -140,8 +138,8 @@ fun TyporbAppRoot(
                 onSelect = { destination ->
                     if (destination.route == currentRoute) return@TyporbBottomBar
                     navController.navigate(destination.route) {
-                        // Single-top with state restoration: switching tabs keeps each tab's
-                        // scroll position and search text, and never stacks duplicates.
+                        // Single-top with state restoration: switching tabs keeps each tab's scroll
+                        // position and search text, and never stacks duplicates.
                         popUpTo(navController.graph.startDestinationId) { saveState = true }
                         launchSingleTop = true
                         restoreState = true
@@ -152,7 +150,7 @@ fun TyporbAppRoot(
     }
 }
 
-/** The elevated floating bottom navigation bar. */
+/** The floating pill-shaped navigation bar. */
 @Composable
 private fun TyporbBottomBar(
     current: TyporbDestination?,
@@ -163,17 +161,18 @@ private fun TyporbBottomBar(
         modifier = modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(horizontal = 18.dp, vertical = 14.dp),
+            .padding(horizontal = 28.dp, vertical = 14.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Row(
             modifier = Modifier
-                .fillMaxWidth()
-                .clip(TyporbShapes.Large)
-                .background(TyporbPalette.GlassElevated)
-                .background(TyporbGradients.cardSheen(alpha = 0.05f), TyporbShapes.Large)
-                .border(BorderStroke(1.dp, TyporbPalette.GlassBorder), TyporbShapes.Large)
-                .padding(horizontal = 6.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                .widthIn(max = 420.dp)
+                .shadow(elevation = TyporbElevation.FloatingBar, shape = TyporbShapes.Bar, clip = false)
+                .clip(TyporbShapes.Bar)
+                .background(TyporbPalette.Surface)
+                .border(1.dp, TyporbPalette.Border, TyporbShapes.Bar)
+                .padding(horizontal = 8.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             TyporbDestination.bottomBarTabs.forEach { destination ->
@@ -195,44 +194,40 @@ private fun BottomBarItem(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val shape = TyporbShapes.Small
-    Column(
+    val shape = TyporbShapes.Capsule
+    val interactionSource = remember { MutableInteractionSource() }
+
+    Row(
         modifier = modifier
+            .pressScale(interactionSource, pressedScale = 0.95f)
             .clip(shape)
-            .background(
-                if (selected) {
-                    Brush.horizontalGradient(
-                        TyporbGradients.Accent.map { it.copy(alpha = 0.16f) },
-                    )
-                } else {
-                    Brush.horizontalGradient(
-                        listOf(
-                            TyporbPalette.TextPrimary.copy(alpha = 0f),
-                            TyporbPalette.TextPrimary.copy(alpha = 0f),
-                        ),
-                    )
-                },
-            )
+            // Selected: a solid indigo chip with crisp white content. Inactive: no fill at all, so
+            // the slate label carries the state on its own.
+            .background(if (selected) TyporbPalette.Indigo else TyporbPalette.Surface)
             .clickable(
-                interactionSource = remember { MutableInteractionSource() },
+                interactionSource = interactionSource,
                 indication = null,
                 onClick = onClick,
             )
-            .padding(vertical = 9.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+            .padding(vertical = 11.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
             imageVector = destination.icon,
             contentDescription = destination.label,
-            tint = if (selected) TyporbPalette.NeonCyan else TyporbPalette.TextMuted,
-            modifier = Modifier.size(21.dp),
+            tint = if (selected) TyporbPalette.OnAccent else TyporbPalette.TextMuted,
+            modifier = Modifier.size(19.dp),
         )
-        Text(
-            text = destination.label,
-            fontSize = 10.sp,
-            color = if (selected) TyporbPalette.NeonCyan else TyporbPalette.TextMuted,
-        )
+        if (selected) {
+            androidx.compose.foundation.layout.Spacer(modifier = Modifier.size(7.dp))
+            Text(
+                text = destination.label,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = TyporbPalette.OnAccent,
+            )
+        }
     }
 }
 

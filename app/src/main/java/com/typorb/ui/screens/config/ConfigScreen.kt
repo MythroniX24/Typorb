@@ -1,5 +1,8 @@
 package com.typorb.ui.screens.config
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -21,11 +24,19 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
+import androidx.compose.material.icons.rounded.Accessibility
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
+import androidx.compose.material.icons.rounded.Widgets
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
@@ -40,8 +51,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
@@ -50,13 +63,15 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.typorb.data.ModelCatalog
 import com.typorb.data.OfflineModelState
 import com.typorb.data.TyporbSettings
+import com.typorb.ui.ApiKeyCheck
 import com.typorb.ui.BOTTOM_BAR_CLEARANCE
 import com.typorb.ui.PermissionStatus
 import com.typorb.ui.PermissionTarget
 import com.typorb.ui.TyporbViewModel
-import com.typorb.ui.components.AccentButton
-import com.typorb.ui.components.GhostButton
-import com.typorb.ui.components.GlassSurface
+import com.typorb.ui.components.ElevatedCard
+import com.typorb.ui.components.Hairline
+import com.typorb.ui.components.PrimaryButton
+import com.typorb.ui.components.SecondaryButton
 import com.typorb.ui.components.SectionLabel
 import com.typorb.ui.components.SettingRow
 import com.typorb.ui.components.TagChip
@@ -71,6 +86,7 @@ fun ConfigScreen(
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val modelState by viewModel.modelState.collectAsStateWithLifecycle()
+    val context = androidx.compose.ui.platform.LocalContext.current
 
     Column(
         modifier = Modifier
@@ -82,29 +98,34 @@ fun ConfigScreen(
         Text(
             text = "Settings",
             fontSize = 24.sp,
+            fontWeight = FontWeight.Bold,
             color = TyporbPalette.TextPrimary,
-            modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 18.dp),
+            modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 20.dp),
         )
 
         Column(
             modifier = Modifier.padding(horizontal = 18.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
+            verticalArrangement = Arrangement.spacedBy(22.dp),
         ) {
-            SectionLabel("Groq API")
-            ApiKeyCard(viewModel = viewModel, settings = settings)
-
-            SectionLabel("Offline model")
-            ModelManagerCard(
-                viewModel = viewModel,
-                settings = settings,
-                state = modelState,
-            )
-
-            SectionLabel("Permissions")
-            PermissionCard(viewModel = viewModel, permissions = permissions)
-
-            SectionLabel("Customization")
-            CustomizationCard(viewModel = viewModel, settings = settings)
+            Column {
+                SectionLabel("Groq API")
+                ApiKeyCard(viewModel = viewModel, settings = settings)
+            }
+            Column {
+                SectionLabel("Model storage")
+                ModelStorageCard(viewModel = viewModel, settings = settings, state = modelState)
+            }
+            Column {
+                SectionLabel("Permissions")
+                PermissionCard(
+                    permissions = permissions,
+                    onOpen = { target -> viewModel.launchPermission(context, target) },
+                )
+            }
+            Column {
+                SectionLabel("Overlay customization")
+                CustomizationCard(viewModel = viewModel, settings = settings)
+            }
         }
     }
 }
@@ -114,88 +135,85 @@ fun ConfigScreen(
 @Composable
 private fun ApiKeyCard(viewModel: TyporbViewModel, settings: TyporbSettings) {
     val input by viewModel.apiKeyInput.collectAsStateWithLifecycle()
-    val saved by viewModel.apiKeySaved.collectAsStateWithLifecycle()
+    val check by viewModel.apiKeyCheck.collectAsStateWithLifecycle()
     var revealed by rememberSaveable { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
     val uriHandler = LocalUriHandler.current
 
-    GlassSurface(contentPadding = 16.dp) {
+    ElevatedCard(contentPadding = 16.dp) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 text = "Groq API key",
-                fontSize = 14.sp,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
                 color = TyporbPalette.TextPrimary,
                 modifier = Modifier.weight(1f),
             )
             if (settings.hasApiKey) {
-                TagChip(text = "Key stored", tint = TyporbPalette.Success)
+                TagChip(
+                    text = "Key stored",
+                    tint = TyporbPalette.Emerald,
+                    container = TyporbPalette.EmeraldTint,
+                )
             }
         }
 
         Spacer(modifier = Modifier.height(4.dp))
         Text(
-            text = "Required for ⚡ Cloud mode. Stored encrypted on this device only.",
+            text = "Required for Cloud mode. Stored encrypted on this device only.",
             fontSize = 12.sp,
             color = TyporbPalette.TextSecondary,
         )
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(TyporbShapes.Small)
-                .background(TyporbPalette.Surface)
-                .border(BorderStroke(1.dp, TyporbPalette.GlassBorder), TyporbShapes.Small)
-                .padding(start = 14.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            androidx.compose.foundation.text.BasicTextField(
-                value = input,
-                onValueChange = viewModel::onApiKeyChange,
-                modifier = Modifier.weight(1f),
-                singleLine = true,
-                enabled = !settings.hasApiKey,
-                textStyle = androidx.compose.ui.text.TextStyle(
-                    color = TyporbPalette.TextPrimary,
+        OutlinedTextField(
+            value = input,
+            onValueChange = viewModel::onApiKeyChange,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !settings.hasApiKey,
+            singleLine = true,
+            placeholder = {
+                Text(
+                    text = if (settings.hasApiKey) "••••••••••••••••" else "gsk_…",
                     fontSize = 14.sp,
-                ),
-                cursorBrush = androidx.compose.ui.graphics.SolidColor(TyporbPalette.NeonCyan),
-                visualTransformation = if (revealed) VisualTransformation.None
-                else PasswordVisualTransformation(),
-                decorationBox = { inner ->
-                    Box {
-                        if (input.isEmpty()) {
-                            Text(
-                                text = if (settings.hasApiKey) "••••••••••••••••" else "gsk_…",
-                                fontSize = 14.sp,
-                                color = TyporbPalette.TextMuted,
-                            )
-                        }
-                        inner()
-                    }
-                },
-            )
-            // Paste shortcut — the key almost always arrives via a browser or password manager.
-            Box(
-                modifier = Modifier
-                    .size(38.dp)
-                    .clip(CircleShape)
-                    .clickable {
-                        viewModel.onApiKeyChange(clipboard.getText()?.text.orEmpty())
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.ContentPaste,
-                    contentDescription = "Paste API key",
-                    tint = TyporbPalette.TextSecondary,
-                    modifier = Modifier.size(17.dp),
+                    color = TyporbPalette.TextMuted,
                 )
-            }
-        }
+            },
+            textStyle = androidx.compose.ui.text.TextStyle(
+                color = TyporbPalette.TextPrimary,
+                fontSize = 14.sp,
+            ),
+            shape = TyporbShapes.Small,
+            visualTransformation = if (revealed) VisualTransformation.None
+            else PasswordVisualTransformation(),
+            trailingIcon = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Paste shortcut — the key almost always arrives from a browser or a manager.
+                    CircleIcon(
+                        icon = Icons.Rounded.ContentPaste,
+                        description = "Paste API key",
+                        onClick = { viewModel.onApiKeyChange(clipboard.getText()?.text.orEmpty()) },
+                    )
+                    CircleIcon(
+                        icon = if (revealed) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
+                        description = if (revealed) "Hide key" else "Show key",
+                        onClick = { revealed = !revealed },
+                    )
+                }
+            },
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedContainerColor = TyporbPalette.Surface,
+                unfocusedContainerColor = TyporbPalette.Surface,
+                disabledContainerColor = TyporbPalette.SurfaceSunken,
+                focusedBorderColor = TyporbPalette.Cobalt,
+                unfocusedBorderColor = TyporbPalette.Border,
+                disabledBorderColor = TyporbPalette.Border,
+                cursorColor = TyporbPalette.Cobalt,
+            ),
+        )
 
-        if (input.isNotBlank() && !saved) {
+        if (input.isNotBlank() && !settings.hasApiKey) {
             Spacer(modifier = Modifier.height(8.dp))
             Text(
                 text = "Looks too short to be a Groq key — expected 20+ characters.",
@@ -207,97 +225,136 @@ private fun ApiKeyCard(viewModel: TyporbViewModel, settings: TyporbSettings) {
         Spacer(modifier = Modifier.height(14.dp))
 
         Row(verticalAlignment = Alignment.CenterVertically) {
-            if (settings.hasApiKey) {
-                Row(
-                    modifier = Modifier
-                        .clip(TyporbShapes.Small)
-                        .clickable { revealed = !revealed }
-                        .padding(horizontal = 10.dp, vertical = 9.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Check,
-                        contentDescription = null,
-                        tint = TyporbPalette.Success,
-                        modifier = Modifier.size(15.dp),
+            when {
+                settings.hasApiKey -> {
+                    SecondaryButton(
+                        text = "Test connection",
+                        onClick = viewModel::testConnection,
+                        icon = Icons.Rounded.Check,
                     )
-                    Text(text = "Key saved", fontSize = 12.sp, color = TyporbPalette.Success)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    SecondaryButton(
+                        text = "Remove",
+                        onClick = viewModel::clearApiKey,
+                        icon = Icons.Rounded.DeleteOutline,
+                        tint = TyporbPalette.Danger,
+                    )
                 }
-                Spacer(modifier = Modifier.width(6.dp))
-                GhostButton(
-                    text = "Remove",
-                    onClick = viewModel::clearApiKey,
-                    icon = Icons.Rounded.DeleteOutline,
-                    tint = TyporbPalette.Danger,
-                )
-            } else {
-                AccentButton(
-                    text = "Save key",
-                    onClick = viewModel::saveApiKey,
-                    enabled = input.isNotBlank(),
-                )
+                else -> {
+                    PrimaryButton(
+                        text = "Save key",
+                        onClick = viewModel::saveApiKey,
+                        enabled = input.isNotBlank(),
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    SecondaryButton(
+                        text = "Test",
+                        onClick = viewModel::testConnection,
+                        enabled = input.isNotBlank(),
+                    )
+                }
             }
+        }
 
-            Spacer(modifier = Modifier.weight(1f))
+        AnimatedVisibility(
+            visible = check != ApiKeyCheck.Idle,
+            enter = fadeIn(),
+            exit = fadeOut(),
+        ) {
+            ConnectionResult(check = check)
+        }
 
-            Row(
-                modifier = Modifier
-                    .clip(TyporbShapes.Capsule)
-                    .clickable { runCatching { uriHandler.openUri(GROQ_CONSOLE_URL) } }
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
-            ) {
-                Text(
-                    text = "Get Free Groq API Key",
-                    fontSize = 12.sp,
-                    color = TyporbPalette.NeonCyan,
-                )
-                Icon(
-                    imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
-                    contentDescription = null,
-                    tint = TyporbPalette.NeonCyan,
-                    modifier = Modifier.size(13.dp),
-                )
-            }
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Row(
+            modifier = Modifier
+                .clip(TyporbShapes.Capsule)
+                .clickable { runCatching { uriHandler.openUri(GROQ_CONSOLE_URL) } }
+                .padding(vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Text(
+                text = "Get Free Groq API Key",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = TyporbPalette.Cobalt,
+            )
+            Icon(
+                imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
+                contentDescription = null,
+                tint = TyporbPalette.Cobalt,
+                modifier = Modifier.size(13.dp),
+            )
         }
     }
 }
 
-// ----------------------------------------------------------------- model card
+@Composable
+private fun ConnectionResult(check: ApiKeyCheck) {
+    Spacer(modifier = Modifier.height(12.dp))
+    val (message, tint, container) = when (check) {
+        is ApiKeyCheck.Ok -> Triple(
+            "Connected — ${check.modelCount} models available.",
+            TyporbPalette.Emerald,
+            TyporbPalette.EmeraldTint,
+        )
+        is ApiKeyCheck.Failed -> Triple(check.reason, TyporbPalette.Danger, TyporbPalette.DangerTint)
+        ApiKeyCheck.Testing -> Triple("Checking…", TyporbPalette.TextSecondary, TyporbPalette.SurfaceSunken)
+        ApiKeyCheck.Idle -> Triple("", TyporbPalette.TextSecondary, TyporbPalette.SurfaceSunken)
+    }
+    Text(
+        text = message,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Medium,
+        color = tint,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(TyporbShapes.Small)
+            .background(container)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    )
+}
+
+// --------------------------------------------------------------- model storage
 
 @Composable
-private fun ModelManagerCard(
+private fun ModelStorageCard(
     viewModel: TyporbViewModel,
     settings: TyporbSettings,
     state: OfflineModelState,
 ) {
-    GlassSurface(contentPadding = 16.dp) {
+    ElevatedCard(contentPadding = 16.dp) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = "Offline model",
-                fontSize = 14.sp,
+                text = "Local ONNX model",
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
                 color = TyporbPalette.TextPrimary,
                 modifier = Modifier.weight(1f),
             )
             TagChip(
                 text = when (state) {
-                    is OfflineModelState.Ready -> formatBytes(state.onDiskBytes)
+                    is OfflineModelState.Ready -> "${formatBytes(state.onDiskBytes)} cached"
                     is OfflineModelState.NotInstalled -> formatBytes(state.totalBytes)
                     is OfflineModelState.Downloading -> "${(state.overallProgress * 100).toInt()}%"
                     is OfflineModelState.Corrupt -> "Corrupt"
                     is OfflineModelState.Failed -> "Failed"
                 },
                 tint = when (state) {
-                    is OfflineModelState.Ready -> TyporbPalette.Success
+                    is OfflineModelState.Ready -> TyporbPalette.Emerald
                     is OfflineModelState.Corrupt, is OfflineModelState.Failed -> TyporbPalette.Danger
                     else -> TyporbPalette.TextSecondary
+                },
+                container = when (state) {
+                    is OfflineModelState.Ready -> TyporbPalette.EmeraldTint
+                    is OfflineModelState.Corrupt, is OfflineModelState.Failed -> TyporbPalette.DangerTint
+                    else -> TyporbPalette.SurfaceSunken
                 },
             )
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -309,15 +366,12 @@ private fun ModelManagerCard(
                     modifier = Modifier
                         .weight(1f)
                         .clip(TyporbShapes.Small)
-                        .background(
-                            if (selected) TyporbPalette.GlassElevated
-                            else TyporbPalette.Surface.copy(alpha = 0.6f),
-                        )
+                        .background(if (selected) TyporbPalette.SurfaceSunken else TyporbPalette.Surface)
                         .border(
                             BorderStroke(
                                 1.dp,
-                                if (selected) TyporbPalette.Violet.copy(alpha = 0.55f)
-                                else TyporbPalette.GlassBorder,
+                                if (selected) TyporbPalette.Indigo.copy(alpha = 0.45f)
+                                else TyporbPalette.Border,
                             ),
                             TyporbShapes.Small,
                         )
@@ -327,7 +381,8 @@ private fun ModelManagerCard(
                     Text(
                         text = variant.label,
                         fontSize = 12.sp,
-                        color = if (selected) TyporbPalette.TextPrimary else TyporbPalette.TextMuted,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                        color = if (selected) TyporbPalette.TextPrimary else TyporbPalette.TextSecondary,
                     )
                     Text(
                         text = formatBytes(variant.totalBytes),
@@ -341,45 +396,33 @@ private fun ModelManagerCard(
         Spacer(modifier = Modifier.height(12.dp))
 
         when (state) {
-            is OfflineModelState.Ready -> Text(
-                text = "Cached and verified on this device.",
-                fontSize = 12.sp,
-                color = TyporbPalette.TextSecondary,
-            )
-
-            is OfflineModelState.NotInstalled -> Text(
-                text = "Not downloaded yet. Offline mode needs the weights on disk.",
-                fontSize = 12.sp,
-                color = TyporbPalette.TextSecondary,
-            )
-
-            is OfflineModelState.Corrupt -> Text(
-                text = state.reason,
-                fontSize = 12.sp,
-                color = TyporbPalette.Danger,
-            )
-
-            is OfflineModelState.Failed -> Text(
-                text = state.reason,
-                fontSize = 12.sp,
-                color = TyporbPalette.Danger,
-            )
-
+            is OfflineModelState.Ready ->
+                Text("Cached and verified on this device.", fontSize = 12.sp, color = TyporbPalette.TextSecondary)
+            is OfflineModelState.NotInstalled ->
+                Text(
+                    "Not downloaded yet. Offline mode needs the weights on disk.",
+                    fontSize = 12.sp,
+                    color = TyporbPalette.TextSecondary,
+                )
+            is OfflineModelState.Corrupt ->
+                Text(state.reason, fontSize = 12.sp, color = TyporbPalette.Danger)
+            is OfflineModelState.Failed ->
+                Text(state.reason, fontSize = 12.sp, color = TyporbPalette.Danger)
             is OfflineModelState.Downloading -> {
                 Text(
-                    text = "Downloading ${state.currentFile}…",
+                    "Downloading ${state.currentFile}…",
                     fontSize = 12.sp,
                     color = TyporbPalette.TextSecondary,
                 )
                 Spacer(modifier = Modifier.height(8.dp))
-                androidx.compose.material3.LinearProgressIndicator(
+                LinearProgressIndicator(
                     progress = { state.overallProgress },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(4.dp)
+                        .height(5.dp)
                         .clip(TyporbShapes.Capsule),
-                    color = TyporbPalette.NeonCyan,
-                    trackColor = TyporbPalette.SurfaceElevated,
+                    color = TyporbPalette.Cobalt,
+                    trackColor = TyporbPalette.SurfaceSunken,
                 )
             }
         }
@@ -390,28 +433,23 @@ private fun ModelManagerCard(
             ?: ModelCatalog.recommended
         Row(verticalAlignment = Alignment.CenterVertically) {
             when (state) {
-                is OfflineModelState.Downloading -> GhostButton(
-                    text = "Cancel",
-                    onClick = viewModel::cancelModelDownload,
-                    icon = Icons.Rounded.DeleteOutline,
-                )
-
+                is OfflineModelState.Downloading ->
+                    TertiaryMini(text = "Cancel", onClick = viewModel::cancelModelDownload)
                 is OfflineModelState.Ready -> {
-                    GhostButton(
-                        text = "Re-download",
+                    SecondaryButton(
+                        text = "Update",
                         onClick = { viewModel.downloadModel(variant) },
                         icon = Icons.Rounded.Refresh,
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    GhostButton(
+                    SecondaryButton(
                         text = "Free space",
                         onClick = { viewModel.deleteModel(variant) },
                         icon = Icons.Rounded.DeleteOutline,
                         tint = TyporbPalette.Danger,
                     )
                 }
-
-                else -> AccentButton(
+                else -> PrimaryButton(
                     text = "Download",
                     onClick = { viewModel.downloadModel(variant) },
                 )
@@ -420,183 +458,258 @@ private fun ModelManagerCard(
     }
 }
 
-// -------------------------------------------------------------- permissions
+@Composable
+private fun TertiaryMini(text: String, onClick: () -> Unit) {
+    Text(
+        text = text,
+        fontSize = 13.sp,
+        fontWeight = FontWeight.Medium,
+        color = TyporbPalette.Danger,
+        modifier = Modifier
+            .clip(TyporbShapes.Small)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+    )
+}
+
+// ---------------------------------------------------------------- permissions
 
 @Composable
-private fun PermissionCard(viewModel: TyporbViewModel, permissions: PermissionStatus) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    GlassSurface(contentPadding = 16.dp) {
-        Text(text = "Permissions", fontSize = 14.sp, color = TyporbPalette.TextPrimary)
+private fun PermissionCard(
+    permissions: PermissionStatus,
+    onOpen: (PermissionTarget) -> Unit,
+) {
+    ElevatedCard(contentPadding = 16.dp) {
+        Text(
+            text = "Permissions",
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = TyporbPalette.TextPrimary,
+        )
         Spacer(modifier = Modifier.height(4.dp))
         Text(
-            text = "Only the accessibility service is strictly required.",
+            text = "Only the accessibility service is strictly required. Turning one off opens the " +
+                "system screen where it can be revoked.",
             fontSize = 12.sp,
             color = TyporbPalette.TextSecondary,
         )
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(10.dp))
 
-        PermissionLine(
+        PermissionSwitchRow(
+            icon = Icons.Rounded.Accessibility,
             title = "Accessibility service",
-            subtitle = "Required — finds text fields and types into them",
+            subtitle = "Finds text fields and types into them",
             granted = permissions.accessibilityService,
-            onOpen = { viewModel.launchPermission(context, PermissionTarget.ACCESSIBILITY) },
+            onToggle = { onOpen(PermissionTarget.ACCESSIBILITY) },
         )
-        PermissionLine(
-            title = "Display over other apps",
-            subtitle = "Recommended — keeps the orb visible on some OEM skins",
+        PermissionSwitchRow(
+            icon = Icons.Rounded.Widgets,
+            title = "Overlay permission",
+            subtitle = "Keeps the orb visible on some OEM skins",
             granted = permissions.overlayPermission,
-            onOpen = { viewModel.launchPermission(context, PermissionTarget.OVERLAY) },
+            onToggle = { onOpen(PermissionTarget.OVERLAY) },
         )
-        PermissionLine(
+        PermissionSwitchRow(
+            icon = Icons.Rounded.Mic,
             title = "Microphone",
-            subtitle = "Required to capture your voice",
+            subtitle = "Captures your voice",
             granted = permissions.microphonePermission,
-            onOpen = { viewModel.launchPermission(context, PermissionTarget.MICROPHONE) },
+            onToggle = { onOpen(PermissionTarget.MICROPHONE) },
         )
     }
 }
 
+/**
+ * A switch row for a system permission.
+ *
+ * The switch mirrors real grant state rather than storing anything of its own, and every change
+ * hands off to the system screen — an app cannot grant these to itself.
+ */
 @Composable
-private fun PermissionLine(
+private fun PermissionSwitchRow(
+    icon: ImageVector,
     title: String,
     subtitle: String,
     granted: Boolean,
-    onOpen: () -> Unit,
+    onToggle: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 7.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            modifier = Modifier
-                .size(8.dp)
-                .clip(CircleShape)
-                .background(if (granted) TyporbPalette.Success else TyporbPalette.Warning),
-        )
-        Spacer(modifier = Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(text = title, fontSize = 13.sp, color = TyporbPalette.TextPrimary)
-            Text(text = subtitle, fontSize = 11.sp, color = TyporbPalette.TextMuted)
+    var explained by remember { mutableStateOf(false) }
+
+    Column {
+        SettingRow(
+            title = title,
+            subtitle = subtitle,
+            icon = icon,
+            modifier = Modifier.padding(vertical = 8.dp),
+        ) {
+            Switch(
+                checked = granted,
+                onCheckedChange = {
+                    explained = true
+                    onToggle()
+                },
+                colors = accentSwitchColors(),
+            )
         }
-        Text(
-            text = if (granted) "Granted" else "Grant",
-            fontSize = 12.sp,
-            color = if (granted) TyporbPalette.Success else TyporbPalette.NeonCyan,
-            modifier = Modifier
-                .clip(TyporbShapes.Capsule)
-                .clickable(enabled = !granted, onClick = onOpen)
-                .padding(horizontal = 12.dp, vertical = 7.dp),
-        )
+        if (explained && !granted) {
+            Text(
+                text = "Opened system settings — grant it there and come back.",
+                fontSize = 11.sp,
+                color = TyporbPalette.TextMuted,
+                modifier = Modifier.padding(start = 46.dp, bottom = 6.dp),
+            )
+        }
     }
 }
 
-// ----------------------------------------------------------- customization
+// -------------------------------------------------------------- customization
 
 @Composable
 private fun CustomizationCard(viewModel: TyporbViewModel, settings: TyporbSettings) {
-    GlassSurface(contentPadding = 16.dp) {
-        Text(text = "Floating box", fontSize = 14.sp, color = TyporbPalette.TextPrimary)
-        Spacer(modifier = Modifier.height(10.dp))
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = "Corner radius",
-                fontSize = 13.sp,
-                color = TyporbPalette.TextSecondary,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                text = "${settings.overlayCornerRadiusDp}dp",
-                fontSize = 13.sp,
-                color = TyporbPalette.NeonCyan,
-            )
-        }
-        Slider(
-            value = settings.overlayCornerRadiusDp.toFloat(),
-            onValueChange = { viewModel.setOverlayCornerRadius(it.toInt()) },
-            valueRange = TyporbSettings.MIN_OVERLAY_CORNER_DP.toFloat()..
-                TyporbSettings.MAX_OVERLAY_CORNER_DP.toFloat(),
-            steps = (TyporbSettings.MAX_OVERLAY_CORNER_DP - TyporbSettings.MIN_OVERLAY_CORNER_DP - 1).coerceAtLeast(0),
-            colors = SliderDefaults.colors(
-                thumbColor = TyporbPalette.NeonCyan,
-                activeTrackColor = TyporbPalette.NeonCyan,
-                inactiveTrackColor = TyporbPalette.SurfaceElevated,
-            ),
+    ElevatedCard(contentPadding = 16.dp) {
+        Text(
+            text = "Floating box",
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = TyporbPalette.TextPrimary,
         )
 
-        Spacer(modifier = Modifier.height(6.dp))
-        HorizontalRule()
+        Spacer(modifier = Modifier.height(14.dp))
+
+        SliderRow(
+            label = "Orb scale",
+            valueLabel = "${settings.overlaySizeDp}dp",
+            value = settings.overlaySizeDp.toFloat(),
+            range = TyporbSettings.MIN_OVERLAY_SIZE_DP.toFloat()..
+                TyporbSettings.MAX_OVERLAY_SIZE_DP.toFloat(),
+            steps = TyporbSettings.MAX_OVERLAY_SIZE_DP - TyporbSettings.MIN_OVERLAY_SIZE_DP - 1,
+            onValueChange = { viewModel.setOverlaySize(it.toInt()) },
+        )
 
         Spacer(modifier = Modifier.height(14.dp))
+
+        SliderRow(
+            label = "Corner radius",
+            valueLabel = "${settings.overlayCornerRadiusDp}dp",
+            value = settings.overlayCornerRadiusDp.toFloat(),
+            range = TyporbSettings.MIN_OVERLAY_CORNER_DP.toFloat()..
+                TyporbSettings.MAX_OVERLAY_CORNER_DP.toFloat(),
+            steps = TyporbSettings.MAX_OVERLAY_CORNER_DP - TyporbSettings.MIN_OVERLAY_CORNER_DP - 1,
+            onValueChange = { viewModel.setOverlayCornerRadius(it.toInt()) },
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+        Hairline()
+        Spacer(modifier = Modifier.height(16.dp))
 
         SettingRow(
             title = "Haptic feedback",
             subtitle = "Tick on start, click on confirm",
+            icon = Icons.Rounded.Widgets,
+            modifier = Modifier.padding(vertical = 6.dp),
         ) {
             Switch(
                 checked = settings.hapticsEnabled,
                 onCheckedChange = viewModel::setHapticsEnabled,
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = TyporbPalette.NeonCyan,
-                    checkedTrackColor = TyporbPalette.Violet.copy(alpha = 0.55f),
-                    uncheckedThumbColor = TyporbPalette.TextMuted,
-                    uncheckedTrackColor = TyporbPalette.SurfaceElevated,
-                ),
+                colors = accentSwitchColors(),
             )
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
         SettingRow(
             title = "Reactive waveform",
             subtitle = "Live amplitude bars while recording",
+            icon = Icons.Rounded.Widgets,
+            modifier = Modifier.padding(vertical = 6.dp),
         ) {
             Switch(
                 checked = settings.waveformEnabled,
                 onCheckedChange = viewModel::setWaveformEnabled,
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = TyporbPalette.NeonCyan,
-                    checkedTrackColor = TyporbPalette.Violet.copy(alpha = 0.55f),
-                    uncheckedThumbColor = TyporbPalette.TextMuted,
-                    uncheckedTrackColor = TyporbPalette.SurfaceElevated,
-                ),
+                colors = accentSwitchColors(),
             )
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
-        HorizontalRule()
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
         SettingRow(
             title = "GPU acceleration",
             subtitle = "Off is faster on entry-level Adreno GPUs",
+            icon = Icons.Rounded.Widgets,
+            modifier = Modifier.padding(vertical = 6.dp),
         ) {
             Switch(
                 checked = settings.useGpuAcceleration,
                 onCheckedChange = viewModel::setGpuAcceleration,
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = TyporbPalette.NeonCyan,
-                    checkedTrackColor = TyporbPalette.Violet.copy(alpha = 0.55f),
-                    uncheckedThumbColor = TyporbPalette.TextMuted,
-                    uncheckedTrackColor = TyporbPalette.SurfaceElevated,
-                ),
+                colors = accentSwitchColors(),
             )
         }
     }
 }
 
 @Composable
-private fun HorizontalRule() {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(1.dp)
-            .background(TyporbPalette.GlassBorder),
+private fun SliderRow(
+    label: String,
+    valueLabel: String,
+    value: Float,
+    range: ClosedFloatingPointRange<Float>,
+    steps: Int,
+    onValueChange: (Float) -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = label,
+            fontSize = 13.sp,
+            color = TyporbPalette.TextSecondary,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = valueLabel,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = TyporbPalette.Cobalt,
+        )
+    }
+    Slider(
+        value = value,
+        onValueChange = onValueChange,
+        valueRange = range,
+        steps = steps.coerceAtLeast(0),
+        colors = SliderDefaults.colors(
+            thumbColor = TyporbPalette.Cobalt,
+            activeTrackColor = TyporbPalette.Cobalt,
+            inactiveTrackColor = TyporbPalette.Border,
+        ),
     )
 }
+
+@Composable
+private fun CircleIcon(
+    icon: ImageVector,
+    description: String,
+    onClick: () -> Unit,
+) {
+    Icon(
+        imageVector = icon,
+        contentDescription = description,
+        tint = TyporbPalette.TextSecondary,
+        modifier = Modifier
+            .size(36.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onClick)
+            .padding(9.dp),
+    )
+}
+
+@Composable
+private fun accentSwitchColors() = SwitchDefaults.colors(
+    checkedThumbColor = TyporbPalette.OnAccent,
+    checkedTrackColor = TyporbPalette.Cobalt,
+    uncheckedThumbColor = TyporbPalette.OnAccent,
+    uncheckedTrackColor = TyporbPalette.BorderStrong,
+    uncheckedBorderColor = TyporbPalette.BorderStrong,
+)
 
 private const val GROQ_CONSOLE_URL = "https://console.groq.com/keys"
 

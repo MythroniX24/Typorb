@@ -27,15 +27,20 @@ data class TyporbSettings(
     val onboardingComplete: Boolean = false,
     /** Corner radius of the floating orb, adjustable from Settings. */
     val overlayCornerRadiusDp: Int = DEFAULT_OVERLAY_CORNER_DP,
+    /** Edge length of the idle orb, adjustable from Settings. */
+    val overlaySizeDp: Int = DEFAULT_OVERLAY_SIZE_DP,
     /** Master switch for the tick/confirm/reject haptic pulses. */
     val hapticsEnabled: Boolean = true,
     /** Whether the recording capsule draws the live amplitude bars. */
     val waveformEnabled: Boolean = true,
 ) {
     companion object {
-        const val DEFAULT_OVERLAY_CORNER_DP = 14
+        const val DEFAULT_OVERLAY_CORNER_DP = 16
         const val MIN_OVERLAY_CORNER_DP = 8
         const val MAX_OVERLAY_CORNER_DP = 24
+        const val DEFAULT_OVERLAY_SIZE_DP = 48
+        const val MIN_OVERLAY_SIZE_DP = 40
+        const val MAX_OVERLAY_SIZE_DP = 64
     }
     val hasApiKey: Boolean get() = apiKey.isNotBlank()
 
@@ -103,6 +108,15 @@ class SettingsRepository(context: Context) {
         plainPrefs.edit().putInt(KEY_OVERLAY_CORNER, clamped).apply()
     }
 
+    /** Clamps to [TyporbSettings.MIN_OVERLAY_SIZE_DP]..[TyporbSettings.MAX_OVERLAY_SIZE_DP]. */
+    fun setOverlaySize(sizeDp: Int) {
+        val clamped = sizeDp.coerceIn(
+            TyporbSettings.MIN_OVERLAY_SIZE_DP,
+            TyporbSettings.MAX_OVERLAY_SIZE_DP,
+        )
+        plainPrefs.edit().putInt(KEY_OVERLAY_SIZE, clamped).apply()
+    }
+
     fun setHapticsEnabled(enabled: Boolean) {
         plainPrefs.edit().putBoolean(KEY_HAPTICS, enabled).apply()
     }
@@ -139,6 +153,10 @@ class SettingsRepository(context: Context) {
                 KEY_OVERLAY_CORNER,
                 TyporbSettings.DEFAULT_OVERLAY_CORNER_DP,
             ),
+            overlaySizeDp = plainPrefs.getInt(
+                KEY_OVERLAY_SIZE,
+                TyporbSettings.DEFAULT_OVERLAY_SIZE_DP,
+            ),
             hapticsEnabled = plainPrefs.getBoolean(KEY_HAPTICS, true),
             waveformEnabled = plainPrefs.getBoolean(KEY_WAVEFORM, true),
         )
@@ -154,6 +172,7 @@ class SettingsRepository(context: Context) {
         const val KEY_GPU = "gpu_acceleration"
         const val KEY_ONBOARDING = "onboarding_complete"
         const val KEY_OVERLAY_CORNER = "overlay_corner_radius"
+        const val KEY_OVERLAY_SIZE = "overlay_size"
         const val KEY_HAPTICS = "haptics_enabled"
         const val KEY_WAVEFORM = "waveform_enabled"
     }

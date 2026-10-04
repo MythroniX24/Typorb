@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** Live status of everything the user must grant before dictation works. */
 data class PermissionStatus(
@@ -30,6 +31,19 @@ data class PermissionStatus(
 ) {
     /** The pill itself only needs the accessibility service; the rest are user-experience extras. */
     val ready: Boolean get() = accessibilityService
+}
+
+/** Result of the Settings screen's Test Connection button. */
+sealed interface ApiKeyCheck {
+    /** Nothing tested yet, or the field changed since the last test. */
+    data object Idle : ApiKeyCheck
+
+    data object Testing : ApiKeyCheck
+
+    /** Connected; [modelCount] is how many models the key can reach. */
+    data class Ok(val modelCount: Int) : ApiKeyCheck
+
+    data class Failed(val reason: String) : ApiKeyCheck
 }
 
 /** Which system screen a "Grant" tap should open. */
@@ -86,9 +100,8 @@ class TyporbViewModel(application: Application) : AndroidViewModel(application) 
     private val _apiKeySaved = MutableStateFlow(settingsRepository.current().hasApiKey)
     val apiKeySaved: StateFlow<Boolean> = _apiKeySaved.asStateFlow()
 
-    /** Set while "clear history" needs a confirmation step. */
-    private val _historyCleared = MutableStateFlow(false)
-    val historyCleared: StateFlow<Boolean> = _historyCleared.asStateFlow()
+    private val _apiKeyCheck = MutableStateFlow<ApiKeyCheck>(ApiKeyCheck.Idle)
+    val apiKeyCheck: StateFlow<ApiKeyCheck> = _apiKeyCheck.asStateFlow()
 
     private var downloadJob: Job? = null
 
@@ -141,6 +154,8 @@ class TyporbViewModel(application: Application) : AndroidViewModel(application) 
 
     fun setOverlayCornerRadius(radiusDp: Int) = settingsRepository.setOverlayCornerRadius(radiusDp)
 
+    fun setOverlaySize(sizeDp: Int) = settingsRepository.setOverlaySize(sizeDp)
+
     fun setHapticsEnabled(enabled: Boolean) = settingsRepository.setHapticsEnabled(enabled)
 
     fun setWaveformEnabled(enabled: Boolean) = settingsRepository.setWaveformEnabled(enabled)
@@ -151,7 +166,32 @@ class TyporbViewModel(application: Application) : AndroidViewModel(application) 
 
     fun onApiKeyChange(value: String) {
         _apiKeyInput.value = value
+        // Any edit invalidates a previous test result; leaving a stale green tick next to a changed
+        // key would be actively misleading.
+        if (_apiKeyCheck.value != ApiKeyCheck.Idle) _apiKeyCheck.value = ApiKeyCheck.Idle
         if (_apiKeySaved.value) _apiKeySaved.value = false
+    }
+
+    /**
+     * Proves the key works by listing models. Tests the field's value if there is one, otherwise the
+     * stored key — so the check is available both before and after saving.
+     */
+    fun testConnection() {
+        if (_apiKeyCheck.value == ApiKeyCheck.Testing) return
+        val candidate = _apiKeyInput.value.trim().ifEmpty { settingsRepository.current().apiKey }
+        if (!isPlausibleGroqKey(candidate)) {
+            _apiKeyCheck.value = ApiKeyCheck.Failed("Enter a Groq API key first.")
+            return
+        }
+        _apiKeyCheck.value = ApiKeyCheck.Testing
+        viewModelScope.launch {
+            val result = withTimeoutOrNull(TEST_TIMEOUT_MS) { container.verifyApiKey(candidate) }
+            _apiKeyCheck.value = when {
+                result == null -> ApiKeyCheck.Failed("Timed out. Check your connection.")
+                result.isSuccess -> ApiKeyCheck.Ok(result.getOrDefault(0))
+                else -> ApiKeyCheck.Failed(friendlyReason(result.exceptionOrNull()))
+            }
+        }
     }
 
     /** Groq keys are `gsk_` prefixed; anything else is rejected before it is stored. */
@@ -216,18 +256,33 @@ class TyporbViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /** Clears the vault. Returns `true` when there was anything to remove. */
-    fun clearTranscripts(): Boolean {
-        val cleared = container.transcriptRepository.clear()
-        if (cleared) _historyCleared.value = true
-        return cleared
-    }
-
-    fun acknowledgeHistoryCleared() {
-        _historyCleared.value = false
-    }
+    fun clearTranscripts(): Boolean = container.transcriptRepository.clear()
 
     private companion object {
         const val STOP_TIMEOUT_MS = 5_000L
+        const val TEST_TIMEOUT_MS = 15_000L
+
+        /**
+         * Turns a transport/HTTP failure into something a user can act on. An invalid key is by far
+         * the most common outcome, so it gets the most specific message.
+         */
+        fun friendlyReason(error: Throwable?): String {
+            val message = error?.message.orEmpty()
+            return when {
+                message.contains("401") || message.contains("403") ->
+                    "Groq rejected that key (401). Check it was copied in full."
+                message.contains("404") ->
+                    "Groq returned 404 — the models endpoint moved."
+                message.contains("429") ->
+                    "Rate limited (429). Your key is valid; try again shortly."
+                message.startsWith("HTTP 5") ->
+                    "Groq is having trouble (${message.take(6)}). Try again shortly."
+                message.contains("Unable to resolve host") || message.contains("Failed to connect") ->
+                    "No connection. Check your network."
+                message.isBlank() -> "Could not verify the key. Try again."
+                else -> message.take(140)
+            }
+        }
 
         /**
          * Groq has issued both `gsk_` and bare keys over time, so the prefix is treated as a

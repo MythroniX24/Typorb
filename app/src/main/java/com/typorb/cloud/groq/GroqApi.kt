@@ -2,10 +2,12 @@ package com.typorb.cloud.groq
 
 import com.typorb.cloud.dto.ChatCompletionRequest
 import com.typorb.cloud.dto.ChatCompletionResponse
+import com.typorb.cloud.dto.GroqModelsResponse
 import com.typorb.cloud.dto.TranscriptionResponse
 import okhttp3.MultipartBody
 import okhttp3.RequestBody
 import retrofit2.http.Body
+import retrofit2.http.GET
 import retrofit2.http.Header
 import retrofit2.http.Multipart
 import retrofit2.http.POST
@@ -27,6 +29,15 @@ interface GroqApi {
         @Part("language") language: RequestBody,
         @Part("temperature") temperature: RequestBody,
     ): TranscriptionResponse
+
+    /**
+     * Lists the models the key can reach. Used by Test Connection, which needs to prove a key is
+     * valid without spending a transcription request on silence.
+     */
+    @GET("openai/v1/models")
+    suspend fun listModels(
+        @Header("Authorization") authorization: String,
+    ): GroqModelsResponse
 
     @POST("openai/v1/chat/completions")
     suspend fun complete(

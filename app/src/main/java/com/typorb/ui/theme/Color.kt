@@ -3,43 +3,60 @@ package com.typorb.ui.theme
 import androidx.compose.ui.graphics.Color
 
 /**
- * Typorb's dark palette: a pitch-black canvas with neon cyan and electric violet accents, and
- * translucent "glass" surfaces.
+ * Typorb's light palette: a crisp off-white canvas, elevated pure-white cards and a cobalt →
+ * indigo accent ramp.
  *
- * Hex values are fixed by the design system so the app shell and the floating overlay always read as
- * one product.
+ * Hex values are fixed by the design system so the app shell and the floating overlay always read
+ * as one product.
  */
 object TyporbPalette {
-    /** #070709 — the app's pitch-black background. */
-    val Background = Color(0xFF070709)
+    /** #F8F9FA — off-white canvas. Deliberately not pure white, to avoid glare. */
+    val Background = Color(0xFFF8F9FA)
 
-    /** Frosted glassmorphism fill: #13131A at 60% opacity. */
-    val Glass = Color(0x9913131A)
+    /** #FFFFFF — elevated card and bottom-bar surfaces. */
+    val Surface = Color(0xFFFFFFFF)
 
-    /** Slightly denser glass for cards that sit on top of other glass. */
-    val GlassElevated = Color(0xB313131A)
+    /** When a white card sits on white, this is the tint that separates them. */
+    val SurfaceSunken = Color(0xFFF4F5F7)
 
-    /** #2A2A38 — the 1dp hairline that separates glass from the background. */
-    val GlassBorder = Color(0xFF2A2A38)
+    /** #E5E7EB — hairline borders separating white surfaces from the canvas. */
+    val Border = Color(0xFFE5E7EB)
 
-    /** Slightly lifted black used where a solid (non-translucent) surface is needed. */
-    val Surface = Color(0xFF0D0D12)
-    val SurfaceElevated = Color(0xFF14141C)
+    /** A slightly stronger border for pressed/selected outlines. */
+    val BorderStrong = Color(0xFFD1D5DB)
 
-    /** Primary accents. */
-    val NeonCyan = Color(0xFF00F2FE)
-    val Violet = Color(0xFF9B51E0)
+    /** #3B82F6 — cobalt, the primary actionable colour. */
+    val Cobalt = Color(0xFF3B82F6)
 
-    /** Text. High-contrast crisp white, muted slate for secondary copy. */
-    val TextPrimary = Color(0xFFFFFFFF)
-    val TextSecondary = Color(0xFF8E8E9F)
-    val TextMuted = Color(0xFF5A5F73)
+    /** #6366F1 — electric indigo, the second half of the accent ramp. */
+    val Indigo = Color(0xFF6366F1)
+
+    /** #10B981 — soft emerald for active/connected state. */
+    val Emerald = Color(0xFF10B981)
+
+    /** #ECFDF5 — the emerald tint behind "service ready" pills. */
+    val EmeraldTint = Color(0xFFECFDF5)
+
+    /** Teal used as the second stop of the recording waveform. */
+    val WaveCyan = Color(0xFF06B6D4)
+
+    /** #111827 — sharp obsidian for titles and body copy. */
+    val TextPrimary = Color(0xFF111827)
+
+    /** #6B7280 — neutral slate for captions and metadata. */
+    val TextSecondary = Color(0xFF6B7280)
+
+    /** A lighter slate for the quietest hints. */
+    val TextMuted = Color(0xFF9CA3AF)
+
+    /** Text/icons drawn on top of an indigo or emerald fill. */
+    val OnAccent = Color(0xFFFFFFFF)
 
     /** Feedback. */
-    val Danger = Color(0xFFFF5470)
-    val Success = Color(0xFF2BE8A6)
-    val Warning = Color(0xFFFFC24B)
+    val Danger = Color(0xFFEF4444)
+    val DangerTint = Color(0xFFFEF2F2)
+    val Warning = Color(0xFFF59E0B)
 
-    /** Live waveform and accent fills use the cyan → violet ramp. */
-    val WaveformGradient = listOf(NeonCyan, Violet)
+    /** Live waveform ramp. */
+    val WaveformGradient = listOf(Cobalt, WaveCyan)
 }

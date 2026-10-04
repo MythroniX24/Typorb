@@ -11,6 +11,7 @@ import android.view.WindowManager
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -73,6 +74,8 @@ class OverlayController(
         removePending?.let { mainHandler.removeCallbacks(it) }
         removePending = null
 
+        val padding = dp(SHADOW_PADDING_DP)
+
         val composeView = ComposeView(appContext).apply {
             setViewTreeLifecycleOwner(lifecycleOwner)
             setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
@@ -93,14 +96,15 @@ class OverlayController(
                         onTap = onTap,
                         cornerRadiusDp = currentSettings.overlayCornerRadiusDp,
                         showWaveform = currentSettings.waveformEnabled,
+                        contentPadding = SHADOW_PADDING_DP.dp,
                     )
                 }
             }
         }
 
         val layoutParams = WindowManager.LayoutParams(
-            dp(48),
-            dp(PILL_HEIGHT_DP),
+            dp(48) + padding * 2,
+            dp(PILL_HEIGHT_DP) + padding * 2,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
@@ -149,9 +153,14 @@ class OverlayController(
     private fun applyLayout(currentState: OverlayUiState) {
         val layoutParams = params ?: return
         val metrics = screenSize()
-        val width = dp(stateWidthDp(currentState))
-        val height = dp(PILL_HEIGHT_DP)
-        val (x, y) = KeyboardGeometry.pillTopLeft(
+        val (pillWidthDp, pillHeightDp) = stateSizeDp(currentState)
+        val width = dp(pillWidthDp)
+        val height = dp(pillHeightDp)
+
+        // KeyboardGeometry answers "where does the pill's own top-left belong". The window is larger
+        // than the pill so the ambient shadow is not clipped by the window surface, so the window is
+        // moved back by the padding on both axes and inflated by it on both sides.
+        val (pillX, pillY) = KeyboardGeometry.pillTopLeft(
             screenWidthPx = metrics.first,
             screenHeightPx = metrics.second,
             keyboardHeightPx = keyboardHeightPx,
@@ -159,11 +168,12 @@ class OverlayController(
             pillHeightPx = height,
             density = density,
         )
+        val padding = dp(SHADOW_PADDING_DP)
 
-        layoutParams.width = width
-        layoutParams.height = height
-        layoutParams.x = x
-        layoutParams.y = y
+        layoutParams.width = width + padding * 2
+        layoutParams.height = height + padding * 2
+        layoutParams.x = pillX - padding
+        layoutParams.y = pillY - padding
         runCatching { windowManager.updateViewLayout(view, layoutParams) }
             .onFailure { Log.w(TAG, "Could not reposition the overlay", it) }
     }
@@ -192,11 +202,15 @@ class OverlayController(
             .start()
     }
 
-    private fun stateWidthDp(currentState: OverlayUiState): Int = when (currentState) {
-        is OverlayUiState.Idle -> IDLE_SIZE_DP
-        is OverlayUiState.Recording -> RECORDING_WIDTH_DP
-        is OverlayUiState.Processing -> PROCESSING_WIDTH_DP
-        is OverlayUiState.Failed -> ERROR_WIDTH_DP
+    /** Pill dimensions in dp; the idle orb is the only state the user can resize. */
+    private fun stateSizeDp(currentState: OverlayUiState): Pair<Int, Int> {
+        val orb = settings.value.overlaySizeDp
+        return when (currentState) {
+            is OverlayUiState.Idle -> orb to orb
+            is OverlayUiState.Recording -> RECORDING_WIDTH_DP to PILL_HEIGHT_DP
+            is OverlayUiState.Processing -> PROCESSING_WIDTH_DP to PILL_HEIGHT_DP
+            is OverlayUiState.Failed -> ERROR_WIDTH_DP to PILL_HEIGHT_DP
+        }
     }
 
     private fun dp(value: Int): Int = (value * density).toInt()
@@ -215,7 +229,14 @@ class OverlayController(
         private const val TAG = "OverlayController"
 
         const val PILL_HEIGHT_DP = 48
-        const val IDLE_SIZE_DP = 48
+
+        /**
+         * Inflates the overlay window beyond the pill on every side.
+         *
+         * A window surface is clipped to its own bounds, so a pill-sized window would cut the soft
+         * ambient shadow off at the edges. 14dp covers the 8dp elevation plus its blur radius.
+         */
+        const val SHADOW_PADDING_DP = 14
         const val RECORDING_WIDTH_DP = 160
         const val PROCESSING_WIDTH_DP = 190
         const val ERROR_WIDTH_DP = 220
