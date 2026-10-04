@@ -78,8 +78,13 @@ class OverlayController(
      * Supplies the saved-state and view-model owners for the overlay window, shared by every
      * ComposeView this controller creates so a detach/reattach cycle cannot end up with a window
      * pointing at a disposed owner.
+     *
+     * It is created as a field initializer, i.e. during the service's `setUp()`, at which point the
+     * service lifecycle is already `STARTED`. That is safe precisely because [OverlayStateOwner]
+     * owns an independent lifecycle rather than adopting the service's — see its KDoc for the
+     * `IllegalStateException` this ordering used to cause.
      */
-    private val stateOwner = OverlayStateOwner(lifecycleOwner)
+    private val stateOwner = OverlayStateOwner()
 
     /** Why the last [show] failed, surfaced verbatim in the Settings debug console. */
     var lastWindowError: String? = null
