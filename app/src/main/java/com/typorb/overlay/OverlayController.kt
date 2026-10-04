@@ -16,6 +16,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.setViewTreeLifecycleOwner
+import com.typorb.data.TyporbSettings
 import com.typorb.model.OverlayUiState
 import com.typorb.service.KeyboardGeometry
 import com.typorb.ui.overlay.TyporbOverlayContent
@@ -38,6 +39,8 @@ class OverlayController(
     context: Context,
     private val lifecycleOwner: LifecycleOwner,
     private val state: StateFlow<OverlayUiState>,
+    /** Drives the user-customisable overlay appearance. */
+    private val settings: StateFlow<TyporbSettings>,
     private val onTap: () -> Unit,
     /** Reports `WindowInsetsCompat.Type.ime()` observations as an IME-height fallback signal. */
     private val onImeInsetChanged: (Int) -> Unit,
@@ -83,8 +86,14 @@ class OverlayController(
             }
             setContent {
                 val currentState by state.collectAsState()
+                val currentSettings by settings.collectAsState()
                 TyporbTheme {
-                    TyporbOverlayContent(state = currentState, onTap = onTap)
+                    TyporbOverlayContent(
+                        state = currentState,
+                        onTap = onTap,
+                        cornerRadiusDp = currentSettings.overlayCornerRadiusDp,
+                        showWaveform = currentSettings.waveformEnabled,
+                    )
                 }
             }
         }

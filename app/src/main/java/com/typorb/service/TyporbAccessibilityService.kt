@@ -49,6 +49,7 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
     private var coordinator: DictationCoordinator? = null
     private var overlayVisible = false
     private var lastEvaluationMs = 0L
+    private var lastDictationStartedAtMs = 0L
 
     private val windowManager: WindowManager
         get() = getSystemService(WINDOW_SERVICE) as WindowManager
@@ -95,7 +96,7 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
         container = TyporbApp.containerOf(this)
         injector = TextInjector(this)
         imeDetector = ImeDetector(this, this)
-        haptics = Haptics(this)
+        haptics = Haptics(this) { container.settingsRepository.current().hapticsEnabled }
 
         val dictation = container.createCoordinator(::onTextReady)
         coordinator = dictation
@@ -104,6 +105,7 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
             context = this,
             lifecycleOwner = this,
             state = dictation.state,
+            settings = container.settingsRepository.settings,
             onTap = ::onPillTapped,
             onImeInsetChanged = imeDetector::reportInsetFallback,
         )
@@ -153,16 +155,42 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
     private fun onPillTapped() {
         val dictation = coordinator ?: return
         dictation.onToggle()
-        if (dictation.state.value is OverlayUiState.Recording) haptics.tick()
+        if (dictation.state.value is OverlayUiState.Recording) {
+            lastDictationStartedAtMs = System.currentTimeMillis()
+            haptics.tick()
+        }
+    }
+
+    /** Files the finished text in the encrypted Transcripts vault. */
+    private fun recordTranscript(
+        text: String,
+        settings: com.typorb.data.TyporbSettings,
+        latencyMs: Long,
+    ) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        container.transcriptRepository.add(
+            com.typorb.data.Transcript(
+                id = "${System.currentTimeMillis()}-${trimmed.hashCode()}",
+                text = trimmed,
+                timestampMs = System.currentTimeMillis(),
+                mode = settings.contextMode,
+                engine = settings.engine,
+                latencyMs = latencyMs.coerceAtLeast(0L),
+            ),
+        )
     }
 
     private suspend fun onTextReady(text: String) {
+        val settingsAtInjection = container.settingsRepository.current()
+        val startedAtMs = System.currentTimeMillis() - lastDictationStartedAtMs
         val result = injector.inject(text)
         when (result.method) {
             TextInjector.Method.ACTION_SET_TEXT,
             TextInjector.Method.CLIPBOARD_PASTE,
             -> {
                 haptics.confirm()
+                recordTranscript(text, settingsAtInjection, startedAtMs)
                 Log.i(TAG, "Text injected via ${result.method}")
             }
             TextInjector.Method.NONE -> {

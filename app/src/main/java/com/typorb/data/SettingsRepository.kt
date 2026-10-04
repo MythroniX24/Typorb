@@ -2,9 +2,6 @@ package com.typorb.data
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.util.Log
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import com.typorb.model.ContextMode
 import com.typorb.model.ProcessingEngine
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,7 +20,23 @@ data class TyporbSettings(
      * either fails to compile the graph or silently runs a slower CPU path than XNNPACK.
      */
     val useGpuAcceleration: Boolean = false,
+    /**
+     * Whether the first-launch permission gate has been completed. Kept true afterwards even if the
+     * user later revokes a permission, so revoking does not trap them in a loop.
+     */
+    val onboardingComplete: Boolean = false,
+    /** Corner radius of the floating orb, adjustable from Settings. */
+    val overlayCornerRadiusDp: Int = DEFAULT_OVERLAY_CORNER_DP,
+    /** Master switch for the tick/confirm/reject haptic pulses. */
+    val hapticsEnabled: Boolean = true,
+    /** Whether the recording capsule draws the live amplitude bars. */
+    val waveformEnabled: Boolean = true,
 ) {
+    companion object {
+        const val DEFAULT_OVERLAY_CORNER_DP = 14
+        const val MIN_OVERLAY_CORNER_DP = 8
+        const val MAX_OVERLAY_CORNER_DP = 24
+    }
     val hasApiKey: Boolean get() = apiKey.isNotBlank()
 
     /** Cloud mode without a key would fail on every dictation, so the UI pre-emptively warns. */
@@ -44,7 +57,7 @@ class SettingsRepository(context: Context) {
     private val plainPrefs: SharedPreferences =
         appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-    private val securePrefs: SharedPreferences = createSecurePreferences(appContext)
+    private val securePrefs: SharedPreferences = SecurePreferences.create(appContext, SECURE_PREFS_NAME)
 
     private val _settings = MutableStateFlow(readSnapshot())
 
@@ -77,6 +90,27 @@ class SettingsRepository(context: Context) {
         plainPrefs.edit().putBoolean(KEY_GPU, enabled).apply()
     }
 
+    fun setOnboardingComplete(complete: Boolean) {
+        plainPrefs.edit().putBoolean(KEY_ONBOARDING, complete).apply()
+    }
+
+    /** Clamps to [TyporbSettings.MIN_OVERLAY_CORNER_DP]..[TyporbSettings.MAX_OVERLAY_CORNER_DP]. */
+    fun setOverlayCornerRadius(radiusDp: Int) {
+        val clamped = radiusDp.coerceIn(
+            TyporbSettings.MIN_OVERLAY_CORNER_DP,
+            TyporbSettings.MAX_OVERLAY_CORNER_DP,
+        )
+        plainPrefs.edit().putInt(KEY_OVERLAY_CORNER, clamped).apply()
+    }
+
+    fun setHapticsEnabled(enabled: Boolean) {
+        plainPrefs.edit().putBoolean(KEY_HAPTICS, enabled).apply()
+    }
+
+    fun setWaveformEnabled(enabled: Boolean) {
+        plainPrefs.edit().putBoolean(KEY_WAVEFORM, enabled).apply()
+    }
+
     /** Stores the API key encrypted. Passing a blank key clears the credential. */
     fun setApiKey(apiKey: String) {
         val trimmed = apiKey.trim()
@@ -100,11 +134,17 @@ class SettingsRepository(context: Context) {
             apiKey = securePrefs.getString(KEY_API_KEY, "").orEmpty(),
             modelVariantId = plainPrefs.getString(KEY_MODEL_VARIANT, null) ?: "int8",
             useGpuAcceleration = plainPrefs.getBoolean(KEY_GPU, false),
+            onboardingComplete = plainPrefs.getBoolean(KEY_ONBOARDING, false),
+            overlayCornerRadiusDp = plainPrefs.getInt(
+                KEY_OVERLAY_CORNER,
+                TyporbSettings.DEFAULT_OVERLAY_CORNER_DP,
+            ),
+            hapticsEnabled = plainPrefs.getBoolean(KEY_HAPTICS, true),
+            waveformEnabled = plainPrefs.getBoolean(KEY_WAVEFORM, true),
         )
     }
 
     private companion object {
-        const val TAG = "SettingsRepository"
         const val PREFS_NAME = "typorb_prefs"
         const val SECURE_PREFS_NAME = "typorb_secure_prefs"
         const val KEY_ENGINE = "processing_engine"
@@ -112,28 +152,9 @@ class SettingsRepository(context: Context) {
         const val KEY_API_KEY = "groq_api_key"
         const val KEY_MODEL_VARIANT = "model_variant"
         const val KEY_GPU = "gpu_acceleration"
-
-        /**
-         * Builds the encrypted store with a Keystore-backed AES256 master key.
-         *
-         * If the Keystore entry was invalidated (device restore, OEM bug) we degrade to a plaintext
-         * store rather than crashing the service — losing dictation is worse than losing at-rest
-         * encryption for one credential.
-         */
-        fun createSecurePreferences(context: Context): SharedPreferences = try {
-            val masterKey = MasterKey.Builder(context)
-                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                .build()
-            EncryptedSharedPreferences.create(
-                context,
-                SECURE_PREFS_NAME,
-                masterKey,
-                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-            )
-        } catch (error: Exception) {
-            Log.e(TAG, "Falling back to plaintext preferences for the API key", error)
-            context.getSharedPreferences(SECURE_PREFS_NAME, Context.MODE_PRIVATE)
-        }
+        const val KEY_ONBOARDING = "onboarding_complete"
+        const val KEY_OVERLAY_CORNER = "overlay_corner_radius"
+        const val KEY_HAPTICS = "haptics_enabled"
+        const val KEY_WAVEFORM = "waveform_enabled"
     }
 }

@@ -14,7 +14,11 @@ import android.util.Log
  * Predefined effects are used from API 29 (the constants are inlined by the compiler); older
  * devices fall back to equivalent one-shot pulses so the feedback still exists.
  */
-class Haptics(context: Context) {
+class Haptics(
+    context: Context,
+    /** Read on every pulse so the Settings toggle applies without restarting the service. */
+    private val isEnabled: () -> Boolean = { true },
+) {
 
     private val vibrator: Vibrator? = resolveVibrator(context)
 
@@ -35,6 +39,7 @@ class Haptics(context: Context) {
         }
 
     private fun vibrate(effect: VibrationEffect) {
+        if (!isEnabled()) return
         try {
             vibrator?.vibrate(effect)
         } catch (error: SecurityException) {

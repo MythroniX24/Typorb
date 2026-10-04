@@ -120,6 +120,8 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.2")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.2")
     implementation("androidx.lifecycle:lifecycle-service:2.8.2")
+    // Single-activity multi-screen navigation (AnimatedNavHost is provided by NavHost + transitions).
+    implementation("androidx.navigation:navigation-compose:2.7.7")
 
     val composeBom = platform("androidx.compose:compose-bom:2024.06.00")
     implementation(composeBom)

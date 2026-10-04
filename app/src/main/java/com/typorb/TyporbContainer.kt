@@ -7,6 +7,7 @@ import com.typorb.cloud.groq.GroqClientFactory
 import com.typorb.data.ModelCatalog
 import com.typorb.data.ModelRepository
 import com.typorb.data.SettingsRepository
+import com.typorb.data.TranscriptRepository
 import com.typorb.domain.DictationCoordinator
 import com.typorb.domain.TextProcessingEngine
 import com.typorb.local.LocalTextProcessor
@@ -34,6 +35,9 @@ class TyporbContainer(context: Context) {
 
     /** In-app download + integrity verification for the offline weights. */
     val modelRepository: ModelRepository = ModelRepository(appContext)
+
+    /** Encrypted history of everything the accessibility service has typed. */
+    val transcriptRepository: TranscriptRepository = TranscriptRepository(appContext)
 
     private val whisperEngine: WhisperOnnxEngine by lazy {
         WhisperOnnxEngine(

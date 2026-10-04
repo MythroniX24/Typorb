@@ -47,20 +47,29 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.typorb.data.TyporbSettings
 import com.typorb.model.OverlayUiState
 import com.typorb.ui.theme.TyporbPalette
+import com.typorb.ui.theme.TyporbShapes
 
 /**
  * The floating Typorb.
  *
  * The window is sized by [com.typorb.overlay.OverlayController], so this composable only has to
  * fill whatever box it is given: a 48dp square when idle, a capsule while recording or processing.
+ *
+ * @param cornerRadiusDp user-adjustable corner radius, driven by the Settings screen.
+ * @param showWaveform when `false` the recording capsule shows a steady pulse dot instead of the
+ *   live amplitude bars — cheaper on battery, and some users find the bars distracting.
  */
 @Composable
 fun TyporbOverlayContent(
     state: OverlayUiState,
     onTap: () -> Unit,
+    cornerRadiusDp: Int = TyporbSettings.DEFAULT_OVERLAY_CORNER_DP,
+    showWaveform: Boolean = true,
 ) {
+    val shape = TyporbShapes.overlayCorner(cornerRadiusDp)
     val interactionSource = remember { MutableInteractionSource() }
     Box(
         modifier = Modifier
@@ -80,10 +89,10 @@ fun TyporbOverlayContent(
             label = "typorb-state",
         ) { current ->
             when (current) {
-                is OverlayUiState.Idle -> IdlePill()
-                is OverlayUiState.Recording -> RecordingPill(current.amplitudes)
-                is OverlayUiState.Processing -> ProcessingPill(current.stage.label)
-                is OverlayUiState.Failed -> FailedPill(current.message)
+                is OverlayUiState.Idle -> IdlePill(shape)
+                is OverlayUiState.Recording -> RecordingPill(current.amplitudes, shape, showWaveform)
+                is OverlayUiState.Processing -> ProcessingPill(current.stage.label, shape)
+                is OverlayUiState.Failed -> FailedPill(current.message, shape)
             }
         }
     }
@@ -91,7 +100,7 @@ fun TyporbOverlayContent(
 
 /** Idle: a 48dp rounded square of frosted glass with a softly pulsing mic. */
 @Composable
-private fun IdlePill() {
+private fun IdlePill(shape: RoundedCornerShape) {
     val transition = rememberInfiniteTransition(label = "idle-pulse")
     val glow by transition.animateFloat(
         initialValue = 0.35f,
@@ -112,7 +121,6 @@ private fun IdlePill() {
         label = "idle-breathe",
     )
 
-    val shape = RoundedCornerShape(14.dp)
     Box(
         modifier = Modifier
             .size(48.dp)
@@ -148,8 +156,11 @@ private fun IdlePill() {
 
 /** Recording: a capsule with five bars driven by live microphone decibels. */
 @Composable
-private fun RecordingPill(amplitudes: List<Float>) {
-    val shape = RoundedCornerShape(24.dp)
+private fun RecordingPill(
+    amplitudes: List<Float>,
+    shape: RoundedCornerShape,
+    showWaveform: Boolean,
+) {
     Row(
         modifier = Modifier
             .fillMaxSize()
@@ -159,7 +170,11 @@ private fun RecordingPill(amplitudes: List<Float>) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Waveform(amplitudes = amplitudes, modifier = Modifier.weight(1f))
+        if (showWaveform) {
+            Waveform(amplitudes = amplitudes, modifier = Modifier.weight(1f))
+        } else {
+            SteadyPulse(modifier = Modifier.weight(1f))
+        }
         StopGlyph()
     }
 }
@@ -206,6 +221,26 @@ private fun Waveform(amplitudes: List<Float>, modifier: Modifier = Modifier) {
     }
 }
 
+/** The waveform-off state: a calm centred dot rather than a live meter. */
+@Composable
+private fun SteadyPulse(modifier: Modifier = Modifier) {
+    val transition = rememberInfiniteTransition(label = "steady-pulse")
+    val scale by transition.animateFloat(
+        initialValue = 0.8f,
+        targetValue = 1.1f,
+        animationSpec = infiniteRepeatable(animation = tween(900, easing = LinearEasing)),
+        label = "steady-scale",
+    )
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Box(
+            modifier = Modifier
+                .size(10.dp)
+                .scale(scale)
+                .background(TyporbPalette.Violet, RoundedCornerShape(5.dp)),
+        )
+    }
+}
+
 /** The "tap to stop" affordance on the right of the recording capsule. */
 @Composable
 private fun StopGlyph() {
@@ -229,7 +264,7 @@ private fun StopGlyph() {
 
 /** Processing: rotating cyan → violet sweep border with a stage label and animated ellipsis. */
 @Composable
-private fun ProcessingPill(label: String) {
+private fun ProcessingPill(label: String, shape: RoundedCornerShape) {
     val transition = rememberInfiniteTransition(label = "processing")
     val sweep by transition.animateFloat(
         initialValue = 0f,
@@ -237,7 +272,6 @@ private fun ProcessingPill(label: String) {
         animationSpec = infiniteRepeatable(animation = tween(1200, easing = LinearEasing)),
         label = "sweep",
     )
-    val shape = RoundedCornerShape(24.dp)
 
     Row(
         modifier = Modifier
@@ -313,8 +347,7 @@ private fun EllipsisDots() {
 
 /** Failure: a red-tinted capsule holding the reason the last dictation did not land. */
 @Composable
-private fun FailedPill(message: String) {
-    val shape = RoundedCornerShape(24.dp)
+private fun FailedPill(message: String, shape: RoundedCornerShape) {
     Row(
         modifier = Modifier
             .fillMaxSize()
