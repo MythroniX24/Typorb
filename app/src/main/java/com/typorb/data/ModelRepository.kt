@@ -46,6 +46,15 @@ sealed interface OfflineModelState {
 }
 
 /**
+ * A downloaded file passed the transfer but failed its SHA-256 or size check.
+ *
+ * Distinguishable from a plain [IOException] on purpose: the transfer itself worked, so this is a
+ * bad or partially-served body rather than a dead connection, and retrying it is usually worth it —
+ * a CDN edge serving a truncated or stale body is the common cause and clears on the next attempt.
+ */
+class ModelIntegrityException(message: String) : IOException(message)
+
+/**
  * Downloads and verifies the offline Whisper weights into app-private storage.
  *
  * Design points that matter on the target hardware:
@@ -54,6 +63,9 @@ sealed interface OfflineModelState {
  *  * **SHA-256 verified** before a file is promoted from `.part` to its final name, so a truncated
  *    or corrupted transfer can never be loaded as a model;
  *  * **atomic** — the engine only ever sees complete files;
+ *  * **off the main thread** — `download` is entered from `viewModelScope`, which dispatches on
+ *    Main, and a blocking multi-megabyte transfer there is both an ANR and, on Android, an outright
+ *    `NetworkOnMainThreadException` from the socket layer;
  *  * **cancellable** and safe to retry: partial files are removed before each attempt.
  */
 class ModelRepository(
@@ -84,7 +96,8 @@ class ModelRepository(
      *
      * @throws CancellationException when the caller cancels; the `.part` file is cleaned up.
      */
-    suspend fun download(variant: ModelCatalog.Variant) {
+    suspend fun download(variant: ModelCatalog.Variant): Unit =
+        withContext(Dispatchers.IO) {
         if (activeVariant != null) throw IllegalStateException("A model download is already running")
         activeVariant = variant
         try {
@@ -139,8 +152,10 @@ class ModelRepository(
             cleanupPartials(variant)
             Log.w(TAG, "Model download failed", error)
             _state.value = OfflineModelState.Failed(
-                reason = error.message ?: "Download failed.",
-                retryable = error !is IOException,
+                reason = describe(error),
+                // A bad body from a CDN edge is not the same as a dead connection: both are worth
+                // another attempt. Only a genuinely unusable filesystem is not.
+                retryable = error !is IOException || error is ModelIntegrityException,
             )
         } finally {
             activeVariant = null
@@ -218,12 +233,47 @@ class ModelRepository(
             val actual = digest.digest().toHexString()
             if (!actual.equals(spec.sha256, ignoreCase = true)) {
                 destination.delete()
-                throw IOException("Integrity check failed for ${spec.name} (expected ${spec.sha256.take(12)}…, got ${actual.take(12)}…)")
+                throw ModelIntegrityException(
+                    "Integrity check failed for ${spec.name} " +
+                        "(expected ${spec.sha256.take(12)}…, got ${actual.take(12)}…)",
+                )
             }
             if (written != spec.sizeBytes) {
                 destination.delete()
-                throw IOException("Size mismatch for ${spec.name}: got $written, expected ${spec.sizeBytes}")
+                throw ModelIntegrityException(
+                    "Size mismatch for ${spec.name}: got $written bytes, expected ${spec.sizeBytes}.",
+                )
             }
+        }
+    }
+
+    /**
+     * Turns a raw exception into something a person can act on.
+     *
+     * The raw messages are accurate but unhelpful — "HTTP 429" and "No space left on device" both
+     * arrive as bare [IOException] text, and neither tells the user what to do next.
+     */
+    private fun describe(error: Exception): String {
+        val detail = error.message.orEmpty()
+        return when {
+            error is ModelIntegrityException -> "${detail} The download was corrupt — try again."
+            detail.contains("429") ->
+                "Hugging Face is rate-limiting anonymous downloads (429). Wait a few minutes and retry."
+            detail.contains("401") || detail.contains("403") ->
+                "Hugging Face refused the request (${detail.take(24)}). Check your connection or VPN."
+            detail.contains("404") ->
+                "That model file is no longer published (404). Try the other model size."
+            detail.contains("ENOSPC") || detail.contains("No space left") ->
+                "Not enough free storage. Free up space and try again."
+            detail.contains("timeout", ignoreCase = true) ||
+                detail.contains("timed out", ignoreCase = true) ->
+                "The connection timed out. Try again on a stronger connection."
+            detail.contains("Unable to resolve host") || detail.contains("UnknownHost") ->
+                "No internet connection."
+            detail.contains("Expected HTTP") || detail.contains("Stream was reset") ||
+                detail.contains("Connection reset") ->
+                "The connection dropped mid-download. Try again."
+            else -> detail.ifBlank { "Download failed." }
         }
     }
 

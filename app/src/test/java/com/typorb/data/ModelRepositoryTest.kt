@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.IOException
 import java.io.File
 import java.security.MessageDigest
 
@@ -125,6 +126,66 @@ class ModelRepositoryTest {
         val corrupt: OfflineModelState = OfflineModelState.Corrupt("bad digest")
         assertTrue(ready is OfflineModelState.Ready)
         assertTrue(corrupt is OfflineModelState.Corrupt)
+    }
+
+    /**
+     * A corrupt body from a CDN edge is not a dead connection.
+     *
+     * Both arrive as [java.io.IOException], so treating every IOException as non-retryable hid the
+     * retry button for the one failure where retrying actually helps.
+     */
+    @Test
+    fun `integrity failures are distinguished from ordinary IO failures`() {
+        val integrity = ModelIntegrityException("Integrity check failed for whisper-tiny.onnx")
+        assertTrue(integrity is java.io.IOException)
+        assertTrue(
+            "integrity failures must be retryable",
+            integrity !is java.io.IOException || integrity is ModelIntegrityException,
+        )
+
+        val outOfSpace = java.io.IOException("No space left on device")
+        assertFalse(
+            "a full disk is not fixed by retrying",
+            outOfSpace !is java.io.IOException || outOfSpace is ModelIntegrityException,
+        )
+    }
+
+    /**
+     * The pinned digests are the contract with Hugging Face; if any drifts the download fails its
+     * integrity check on every user's device and there is no way to recover in-app.
+     */
+    @Test
+    fun `catalog digests match the files actually published upstream`() {
+        // Digests captured from huggingface.co for onnx-community/whisper-tiny and
+        // openai/whisper-tiny. Re-verify when bumping the catalog.
+        val expected = mapOf(
+            "whisper-tiny.onnx|int8" to "2af4a414ca47aa30f61246017e5fe82b0a8d229281d1255ba666a2a7f6b84d19",
+            "whisper-tiny-decoder.onnx|int8" to "25e807a962b6349356d0ea5d0dfe530b7e5bf0e2a484aeca0359d03143faddd3",
+            "whisper-tiny.onnx|fp32" to "6642befb640f950d4a8cbbd17834d59e7e75f575b81ccf213e06b050623ab1dd",
+            "whisper-tiny-decoder.onnx|fp32" to "8d20f4157407006e871d63ca0a3c54dddd7db33dfc4ee076960f1f8b2763ce3e",
+            "tokenizer.json|int8" to "27fc476bfe7f17299480be2273fc0608e4d5a99aba2ab5dec5374b4482d1a566",
+            // FP32 reuses the int8 tokenizer entry, but it is still enumerated under its own id.
+            "tokenizer.json|fp32" to "27fc476bfe7f17299480be2273fc0608e4d5a99aba2ab5dec5374b4482d1a566",
+        )
+        ModelCatalog.variants.forEach { variant ->
+            variant.files.forEach { file ->
+                val key = "${file.name}|${variant.id}"
+                assertEquals(
+                    "digest drifted for $key",
+                    expected.getValue(key),
+                    file.sha256,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `catalog sizes match the published file sizes`() {
+        assertEquals(10_124_990L, ModelCatalog.INT8.encoder.sizeBytes)
+        assertEquals(30_719_241L, ModelCatalog.INT8.decoder.sizeBytes)
+        assertEquals(32_904_992L, ModelCatalog.FP32.encoder.sizeBytes)
+        assertEquals(118_553_827L, ModelCatalog.FP32.decoder.sizeBytes)
+        assertEquals(2_480_466L, ModelCatalog.INT8.tokenizer.sizeBytes)
     }
 
     private fun sha256(bytes: ByteArray): String =
