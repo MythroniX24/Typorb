@@ -33,3 +33,23 @@
 
 # Compose
 -dontwarn androidx.compose.**
+
+# Fix R8 missing-errorprone-annotations from tink/crypto (blocks release minification).
+# tink references errorprone CheckReturnValue/CanIgnoreReturnValue/RestrictedApi/Immutable,
+# but the errorprone annotations jar isn't shipped on the Android classpath.
+-dontwarn com.google.errorprone.annotations.**
+-keep class com.google.errorprone.annotations.** { *; }
+
+# Keep reflection-safe helpers used by tink/EncryptedSharedPreferences.
+-keepclassmembers class com.google.crypto.tink.** {
+    <fields>;
+    <methods>;
+}
+-keep class com.google.crypto.tink.** {
+    *;
+}
+
+# Keep retrolambda / Kotlin JVM stubs if present.
+-dontwarn sun.reflect.**
+-dontwarn javax.annotation.**
+-dontwarn org.codehaus.mojo.signatures.**

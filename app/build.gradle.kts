@@ -106,8 +106,11 @@ android {
     }
 
     lint {
-        abortOnError = false
-        checkReleaseBuilds = false
+        // Failure on a release build is a real defect, not a flaky lint warning.
+        // Treat lint failures as hard errors for the release build so the
+        // published APK can never ship with a broken build config.
+        abortOnError = true
+        checkReleaseBuilds = true
     }
 }
 
@@ -148,6 +151,12 @@ dependencies {
 
     // Offline inference engine
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.1")
+
+    // Fix release minification (R8) missing classes from tink's runtime model download.
+    // tink.KeysetManager / KeysDownloader reference google.api.client + joda-time,
+    // but those are not transitive from the rest of the app, so release builds fail.
+    implementation("com.google.api-client:google-api-client:1.32.2")
+    implementation("joda-time:joda-time:2.12.5")
 
     testImplementation("junit:junit:4.13.2")
     // Android provides org.json at runtime; unit tests need it on the JVM classpath too.
