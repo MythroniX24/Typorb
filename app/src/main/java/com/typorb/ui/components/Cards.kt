@@ -54,33 +54,15 @@ fun ElevatedCard(
     modifier: Modifier = Modifier,
     shape: RoundedCornerShape = TyporbShapes.Medium,
     elevation: Dp = TyporbElevation.Card,
-    onClick: (() -> Unit)? = null,
     contentPadding: Dp = 18.dp,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    val interactionSource = remember { MutableInteractionSource() }
-    val clickModifier = if (onClick != null) {
-        Modifier
-            .pressScale(interactionSource)
-            .clickable(
-                interactionSource = interactionSource,
-                indication = androidx.compose.material.ripple.rememberRipple(
-                    bounded = false,
-                    color = TyporbPalette.TextPrimary,
-                ),
-                onClick = onClick,
-            )
-    } else {
-        Modifier
-    }
-
     Column(
         modifier = modifier
             .shadow(elevation = elevation, shape = shape, clip = false)
             .clip(shape)
             .background(TyporbPalette.Surface)
             .border(BorderStroke(1.dp, TyporbPalette.Border), shape)
-            .then(clickModifier)
             .padding(contentPadding),
         content = content,
     )

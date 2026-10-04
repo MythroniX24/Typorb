@@ -64,6 +64,7 @@ import com.typorb.ui.rememberBottomBarClearance
 import com.typorb.ui.TyporbViewModel
 import com.typorb.ui.components.ElevatedCard
 import com.typorb.ui.components.TagChip
+import com.typorb.ui.components.entrance
 import com.typorb.ui.vaultIcon
 import com.typorb.ui.theme.TyporbPalette
 import com.typorb.ui.theme.TyporbShapes
@@ -114,6 +115,7 @@ fun VaultScreen(viewModel: TyporbViewModel) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .entrance(index = 0)
                 .padding(start = 20.dp, end = 16.dp, top = 18.dp, bottom = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -166,7 +168,9 @@ fun VaultScreen(viewModel: TyporbViewModel) {
         SearchFilter(
             query = query,
             onQueryChange = viewModel::onSearchChange,
-            modifier = Modifier.padding(horizontal = 18.dp),
+            modifier = Modifier
+                .entrance(index = 1)
+                .padding(horizontal = 18.dp),
         )
 
         Spacer(modifier = Modifier.height(16.dp))
