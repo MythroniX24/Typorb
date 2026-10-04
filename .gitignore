@@ -1,0 +1,25 @@
+# Built application files
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Gradle
+.gradle/
+build/
+local.properties
+
+# Offline model weights — fetched with tools/fetch-whisper-model.sh, never committed
+app/src/main/assets/whisper/*.onnx
+app/src/main/assets/whisper/tokenizer.json
+
+# Secrets
+*.jks
+*.keystore
+keystore.properties
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+captures/

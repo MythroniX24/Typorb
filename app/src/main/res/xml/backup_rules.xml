@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- EncryptedSharedPreferences must never be restored onto another device. -->
+    <exclude
+        domain="sharedpref"
+        path="typorb_secure_prefs.xml" />
+</full-backup-content>

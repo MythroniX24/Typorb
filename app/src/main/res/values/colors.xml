@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="typorb_background">#070709</color>
+    <color name="typorb_neon_cyan">#00F2FE</color>
+    <color name="typorb_violet">#9B51E0</color>
+    <color name="ic_launcher_background">#070709</color>
+</resources>

@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">Typorb</string>
+
+    <string name="accessibility_service_label">Typorb Voice Typing</string>
+    <string name="accessibility_service_description">Typorb watches for focused text fields and shows a floating microphone you can tap to dictate anywhere on your device. It types what you say straight into the field you are editing.</string>
+
+    <string name="action_grant">Grant</string>
+    <string name="status_granted">Granted</string>
+    <string name="status_missing">Not granted</string>
+</resources>
