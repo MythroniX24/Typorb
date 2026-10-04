@@ -2,6 +2,7 @@ package com.typorb.service
 
 import android.accessibilityservice.AccessibilityService
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
@@ -17,6 +18,8 @@ import com.typorb.model.OverlayUiState
 import com.typorb.model.ProcessingEngine
 import com.typorb.overlay.OverlayController
 import com.typorb.util.Haptics
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
@@ -51,6 +54,15 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
     private var lastEvaluationMs = 0L
     private var lastDictationStartedAtMs = 0L
 
+    /**
+     * Short re-check loop that runs while a field holds focus but the keyboard has not appeared yet.
+     *
+     * The keyboard animates in *after* the tap, and several OEM keyboards post no further
+     * accessibility event when they finish. Without this poll the pill would only ever be evaluated
+     * at tap time — when the IME is still hidden — and would never appear at all.
+     */
+    private var imeWatchJob: Job? = null
+
     private val windowManager: WindowManager
         get() = getSystemService(WINDOW_SERVICE) as WindowManager
 
@@ -64,17 +76,19 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
-        // Events emitted by the IME itself carry its own root window; acting on them would hide the
-        // pill exactly when the keyboard appears.
-        if (imeDetector.isImePackage(event.packageName?.toString())) return
 
+        // IME-owned events are deliberately NOT dropped. The `TYPE_WINDOW_STATE_CHANGED` that the
+        // keyboard posts when it appears carries the *IME's* package name, so filtering those events
+        // out — as an earlier revision did — threw away the only notification that the IME had
+        // become visible, and the pill could never appear. `getRootInActiveWindow()` still resolves
+        // to the app underneath the keyboard, so focus detection stays correct.
         when (event.eventType) {
             AccessibilityEvent.TYPE_VIEW_FOCUSED,
             AccessibilityEvent.TYPE_VIEW_CLICKED,
             AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
-            -> evaluateOverlayVisibility(force = false)
+            -> evaluateOverlayVisibility()
         }
     }
 
@@ -83,6 +97,7 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
     }
 
     override fun onDestroy() {
+        stopImeWatch()
         if (::overlay.isInitialized) hideOverlay()
         coordinator?.release()
         coordinator = null
@@ -130,11 +145,27 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
      * Both conditions must hold: an editable field holds input focus, and the IME is on screen.
      * Either one dropping out hides the pill immediately.
      */
-    private fun evaluateOverlayVisibility(force: Boolean) {
+    private fun evaluateOverlayVisibility() {
         if (!::overlay.isInitialized) return
         val now = System.currentTimeMillis()
-        if (!force && now - lastEvaluationMs < EVALUATION_THROTTLE_MS) return
+        if (now - lastEvaluationMs < EVALUATION_THROTTLE_MS) return
         lastEvaluationMs = now
+
+        if (evaluateOnce()) {
+            stopImeWatch()
+        } else {
+            startImeWatch()
+        }
+    }
+
+    /**
+     * Applies the current focus + IME state to the overlay window.
+     *
+     * @return `true` when an editable field still holds focus — i.e. we are only waiting on the
+     *   keyboard, and a re-check is worth scheduling.
+     */
+    private fun evaluateOnce(): Boolean {
+        if (!::overlay.isInitialized) return false
 
         val imeState = imeDetector.currentState(screenHeightPx())
         val editableFieldFocused =
@@ -150,6 +181,31 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
         } else {
             hideOverlay()
         }
+        return editableFieldFocused
+    }
+
+    /**
+     * Polls briefly while a field is focused but the keyboard is still animating in, so the pill
+     * appears the moment the IME window lands even when no accessibility event announces it.
+     */
+    private fun startImeWatch() {
+        if (imeWatchJob?.isActive == true) return
+        imeWatchJob = lifecycleScope.launch {
+            try {
+                val deadline = SystemClock.uptimeMillis() + IME_WATCH_WINDOW_MS
+                while (SystemClock.uptimeMillis() < deadline) {
+                    delay(IME_WATCH_INTERVAL_MS)
+                    if (evaluateOnce()) return@launch
+                }
+            } finally {
+                imeWatchJob = null
+            }
+        }
+    }
+
+    private fun stopImeWatch() {
+        imeWatchJob?.cancel()
+        imeWatchJob = null
     }
 
     private fun onPillTapped() {
@@ -225,5 +281,11 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
 
         /** Focus events arrive in bursts; one evaluation per frame-ish is plenty. */
         const val EVALUATION_THROTTLE_MS = 40L
+
+        /** How long to keep looking for a keyboard after a field takes focus. */
+        const val IME_WATCH_WINDOW_MS = 3_000L
+
+        /** Keyboard-show animation on a budget device is ~200-400ms. */
+        const val IME_WATCH_INTERVAL_MS = 120L
     }
 }

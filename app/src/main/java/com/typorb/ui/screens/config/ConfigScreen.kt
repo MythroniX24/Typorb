@@ -11,6 +11,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -20,9 +21,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Accessibility
@@ -91,41 +91,67 @@ fun ConfigScreen(
     val context = androidx.compose.ui.platform.LocalContext.current
     val bottomClearance = rememberBottomBarClearance()
 
-    Column(
+    // LazyColumn rather than Column + verticalScroll: this screen is long, and a scrollable Column
+    // eagerly composes and measures every card up front. On a low-end GPU that first frame is
+    // expensive and stutters when the user flicks the list. LazyColumn only builds what is visible.
+    LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding()
-            .verticalScroll(rememberScrollState())
-            .padding(bottom = bottomClearance),
+            .statusBarsPadding(),
+        contentPadding = PaddingValues(bottom = bottomClearance),
     ) {
-        Text(
-            text = "Settings",
-            fontSize = 24.sp,
-            fontWeight = FontWeight.Bold,
-            color = TyporbPalette.TextPrimary,
-            modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 20.dp),
-        )
+        item(key = "config-title") {
+            Text(
+                text = "Settings",
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold,
+                color = TyporbPalette.TextPrimary,
+                modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 20.dp),
+            )
+        }
 
-        Column(
-            modifier = Modifier.padding(horizontal = 18.dp),
-            verticalArrangement = Arrangement.spacedBy(22.dp),
-        ) {
-            Column(modifier = Modifier.entrance(index = 0)) {
+        item(key = "config-api") {
+            Column(
+                modifier = Modifier
+                    .padding(horizontal = 18.dp)
+                    .entrance(index = 0),
+            ) {
                 SectionLabel("Groq API")
                 ApiKeyCard(viewModel = viewModel, settings = settings)
             }
-            Column(modifier = Modifier.entrance(index = 1)) {
+        }
+
+        item(key = "config-model") {
+            Column(
+                modifier = Modifier
+                    .padding(start = 18.dp, end = 18.dp, top = 22.dp)
+                    .entrance(index = 1),
+            ) {
                 SectionLabel("Model storage")
                 ModelStorageCard(viewModel = viewModel, settings = settings, state = modelState)
             }
-            Column(modifier = Modifier.entrance(index = 2)) {
+        }
+
+        item(key = "config-permissions") {
+            Column(
+                modifier = Modifier
+                    .padding(start = 18.dp, end = 18.dp, top = 22.dp)
+                    .entrance(index = 2),
+            ) {
                 SectionLabel("Permissions")
                 PermissionCard(
                     permissions = permissions,
                     onOpen = { target -> viewModel.launchPermission(context, target) },
                 )
             }
-            Column(modifier = Modifier.entrance(index = 3)) {
+        }
+
+        item(key = "config-overlay") {
+            Column(
+                modifier = Modifier
+                    .padding(start = 18.dp, end = 18.dp, top = 22.dp)
+                    .entrance(index = 3),
+            ) {
                 SectionLabel("Overlay customization")
                 CustomizationCard(viewModel = viewModel, settings = settings)
             }

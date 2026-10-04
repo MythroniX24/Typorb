@@ -61,16 +61,32 @@ fun Modifier.entrance(
  *
  * Amplitude is deliberately small: a status indicator that throbs is distracting, and this one sits
  * beside the brand wordmark.
+ *
+ * [enabled] matters for performance as much as for taste: an infinite transition never retires, so
+ * a permanently-running one keeps the frame clock busy at 60fps for the life of the composition and
+ * competes with scrolling on a budget GPU. Callers pass `false` when there is nothing to signal and
+ * the animation settles to [min] immediately instead.
  */
 @Composable
 fun rememberBreathingAlpha(
     min: Float = 0.55f,
     max: Float = 1f,
     periodMs: Int = 1600,
+    enabled: Boolean = true,
 ): Float {
+    if (!enabled) return min
+    return BreathingLoop(max = max, periodMs = periodMs)
+}
+
+/**
+ * The repeating loop, kept in its own composable so that when [rememberBreathingAlpha] is disabled
+ * the infinite transition is never composed at all — there is no animation left driving frames.
+ */
+@Composable
+private fun BreathingLoop(max: Float, periodMs: Int): Float {
     val transition = rememberInfiniteTransition(label = "breathing")
     val value by transition.animateFloat(
-        initialValue = min,
+        initialValue = 0.55f,
         targetValue = max,
         animationSpec = infiniteRepeatable(
             animation = tween(periodMs, easing = LinearEasing),

@@ -46,8 +46,12 @@ import com.typorb.ui.theme.TyporbShapes
 /**
  * The elevated white card every panel is built from.
  *
- * A soft diffuse ambient shadow (`clip = false`) lifts the white surface off the off-white canvas,
- * and a 1dp [TyporbPalette.Border] hairline keeps the edge crisp where the shadow is weakest.
+ * A soft diffuse ambient shadow lifts the white surface off the off-white canvas, and a 1dp
+ * [TyporbPalette.Border] hairline keeps the edge crisp where the shadow is weakest.
+ *
+ * The shadow is clipped to the card's own shape. The card is fully opaque, so clipping it changes
+ * nothing visually, but it lets the shadow render straight into the card's layer instead of forcing
+ * an extra offscreen pass per card — which is what made long scrolling lists stutter on low-end GPUs.
  */
 @Composable
 fun ElevatedCard(
@@ -59,8 +63,7 @@ fun ElevatedCard(
 ) {
     Column(
         modifier = modifier
-            .shadow(elevation = elevation, shape = shape, clip = false)
-            .clip(shape)
+            .shadow(elevation = elevation, shape = shape, clip = true)
             .background(TyporbPalette.Surface)
             .border(BorderStroke(1.dp, TyporbPalette.Border), shape)
             .padding(contentPadding),
@@ -110,8 +113,9 @@ fun StatusBadge(
 ) {
     val container = if (active) TyporbPalette.EmeraldTint else TyporbPalette.SurfaceSunken
     val content = if (active) TyporbPalette.Emerald else TyporbPalette.TextSecondary
-    // Only the live state breathes; a "needs setup" badge stays perfectly still so it never nags.
-    val breath = rememberBreathingAlpha()
+    // Only the live state breathes; a "needs setup" badge stops its animation entirely so it never
+    // nags the user and never keeps the frame clock busy on a device that is already busy scrolling.
+    val breath = rememberBreathingAlpha(enabled = active)
 
     Row(
         modifier = modifier

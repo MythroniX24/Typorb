@@ -11,6 +11,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
@@ -80,34 +82,47 @@ fun ControlScreen(
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val bottomClearance = rememberBottomBarClearance()
 
-    Column(
+    // LazyColumn instead of Column + verticalScroll so only the visible cards are composed.
+    LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding()
-            .verticalScroll(rememberScrollState())
-            .padding(bottom = bottomClearance),
+            .statusBarsPadding(),
+        contentPadding = PaddingValues(bottom = bottomClearance),
     ) {
-        ControlTopBar(
-            serviceActive = permissions.accessibilityService,
-            onOpenSettings = onOpenSettings,
-        )
+        item(key = "control-topbar") {
+            ControlTopBar(
+                serviceActive = permissions.accessibilityService,
+                onOpenSettings = onOpenSettings,
+            )
+        }
 
-        Column(
-            modifier = Modifier.padding(horizontal = 18.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp),
-        ) {
+        item(key = "control-engine") {
             EngineHeroCard(
                 settings = settings,
                 onSelect = viewModel::setEngine,
-                modifier = Modifier.entrance(index = 0),
+                modifier = Modifier
+                    .padding(horizontal = 18.dp)
+                    .entrance(index = 0),
             )
+        }
 
-            Column(modifier = Modifier.entrance(index = 1)) {
+        item(key = "control-modes") {
+            Column(
+                modifier = Modifier
+                    .padding(start = 18.dp, end = 18.dp, top = 20.dp)
+                    .entrance(index = 1),
+            ) {
                 SectionLabel("Typing context")
                 ModeChips(selected = settings.contextMode, onSelect = viewModel::setContextMode)
             }
+        }
 
-            Column(modifier = Modifier.entrance(index = 2)) {
+        item(key = "control-sandbox") {
+            Column(
+                modifier = Modifier
+                    .padding(start = 18.dp, end = 18.dp, top = 20.dp)
+                    .entrance(index = 2),
+            ) {
                 SectionLabel("Try it out")
                 SandboxCard(settings = settings, permissions = permissions)
             }
