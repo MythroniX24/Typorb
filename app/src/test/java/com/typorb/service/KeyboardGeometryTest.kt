@@ -63,4 +63,73 @@ class KeyboardGeometryTest {
 
         assertEquals(zero, negative)
     }
+
+    /**
+     * A floating or split keyboard does not reach the bottom of the screen, so the distance the IME
+     * window's top edge sits from the bottom is much larger than the keyboard itself.
+     *
+     * That is exactly the right number to position against: the pill is placed above the keyboard's
+     * *top edge*, so anchoring on the top edge keeps it glued to a floating keyboard too, rather than
+     * letting it drift to the top of the display.
+     */
+    @Test
+    fun `pill tracks a floating keyboard's top edge rather than the screen bottom`() {
+        // A 400px-tall floating keyboard whose top edge is at y=600 on a 1520px screen.
+        val display = 1520
+        val windowTop = 600
+        val floatingKeyboardHeight = display - windowTop
+
+        val keyboardTop = ImeGeometry.heightAboveBottomInset(
+            displayHeightPx = display,
+            windowTopPx = windowTop,
+            windowHeightPx = 400,
+            windowWidthPx = 720,
+        )
+        assertEquals(floatingKeyboardHeight, keyboardTop)
+
+        val (_, y) = KeyboardGeometry.pillTopLeft(
+            screenWidthPx = 720,
+            screenHeightPx = display,
+            keyboardHeightPx = keyboardTop,
+            pillWidthPx = 320,
+            pillHeightPx = 96,
+            density = density,
+        )
+
+        // The pill's bottom edge plus the 16dp margin lands exactly on the keyboard's top edge.
+        val margin = 32 // 16dp at density 2
+        assertEquals(windowTop, y + 96 + margin)
+        assertTrue("pill is not pinned to the top of the screen", y > 0)
+    }
+
+    /**
+     * End to end on a Redmi 8A: the pill clears a docked Gboard that rests on a 3-button nav bar.
+     */
+    @Test
+    fun `pill clears a docked keyboard sitting above a navigation bar`() {
+        val display = 1520
+        val navBar = 96
+        val gboardHeight = 440
+        val keyboardTop = display - navBar - gboardHeight
+
+        val keyboardHeight = ImeGeometry.heightAboveBottomInset(
+            displayHeightPx = display,
+            windowTopPx = keyboardTop,
+            windowHeightPx = gboardHeight,
+            windowWidthPx = 720,
+        )
+        assertEquals(navBar + gboardHeight, keyboardHeight)
+
+        val (_, y) = KeyboardGeometry.pillTopLeft(
+            screenWidthPx = 720,
+            screenHeightPx = display,
+            keyboardHeightPx = keyboardHeight,
+            pillWidthPx = 320,
+            pillHeightPx = 96,
+            density = density,
+        )
+
+        val margin = 32
+        assertEquals(keyboardTop, y + 96 + margin)
+    }
 }
