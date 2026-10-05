@@ -1,6 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Subscription list for TyporbAccessibilityService.
+
+  These are the events that can change where the input focus is or whether a keyboard is on screen: a
+  tap, a focus move, a window transition, a change to the window list (which is how the platform
+  announces that a keyboard appeared or went away), and text changes.
+
+  `typeWindowContentChanged` is deliberately NOT subscribed. It fires on every keystroke in the app
+  and on every redraw inside the keyboard, and each one would cost a focused-node fetch plus a
+  window-list fetch — a per-keystroke IPC flood that buys nothing, because typing cannot move focus.
+
+  `flagRetrieveInteractiveWindows` is what lets `getWindows()` include the keyboard window, and
+  `canRetrieveWindowContent` is required to read the focused field at all.
+-->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeViewFocused|typeViewTextChanged|typeViewClicked"
+    android:accessibilityEventTypes="typeViewFocused|typeViewClicked|typeViewTextChanged|typeWindowStateChanged|typeWindowsChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:accessibilityFlags="flagDefault|flagReportViewIds|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews"
     android:canRetrieveWindowContent="true"

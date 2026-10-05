@@ -2,6 +2,7 @@ package com.typorb.service
 
 import android.accessibilityservice.AccessibilityService
 import android.os.Build
+import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import android.view.WindowManager
@@ -17,12 +18,15 @@ import com.typorb.domain.DictationCoordinator
 import com.typorb.domain.TyporbException
 import com.typorb.model.OverlayUiState
 import com.typorb.model.ProcessingEngine
+import com.typorb.model.orbVisibility
+import com.typorb.model.pinsOrb
 import com.typorb.overlay.ImeProbeController
 import com.typorb.overlay.OverlayController
 import com.typorb.util.Permissions
 import com.typorb.util.Haptics
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
@@ -32,7 +36,8 @@ import kotlinx.coroutines.launch
  * The system-wide half of Typorb.
  *
  * Responsibilities:
- *  * decide *when* the floating pill may exist — a focused, editable field **and** a visible IME;
+ *  * decide *when* the floating pill may exist — a soft keyboard on screen (the editable-field
+ *    reading is evidence and diagnostics, deliberately not a precondition; see [applyOverlayState]);
  *  * keep the pill 16dp above the keyboard's real top edge, pinned to the right;
  *  * forward taps to the [DictationCoordinator];
  *  * write the finished text back into the focused field (with the clipboard fallback), then hide.
@@ -53,6 +58,9 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
     private lateinit var overlay: OverlayController
     private var imeProbe: ImeProbeController? = null
 
+    /** `true` once [setUp] has built the object graph for a connection. */
+    private var setUpDone = false
+
     private var coordinator: DictationCoordinator? = null
     private var overlayVisible = false
     private var lastEvaluationMs = 0L
@@ -62,14 +70,33 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
     private var lastDictationStartedAtMs = 0L
 
     /**
-     * Cached "an editable field holds focus", refreshed only from events raised by the app.
+     * Whether an editable field held focus at the last evaluation.
      *
-     * Kept as state rather than re-derived, because the only event that announces the keyboard has
-     * risen comes from the IME, and reading focus on that event resolves to the keyboard window
-     * instead of the app — which made the pill hide itself the instant it became eligible to show.
+     * This used to be the gate on visibility, cached and refreshed only from events raised by an app.
+     * It is now reported rather than acted on: on several OEM builds the focused field cannot be read
+     * at all, and gating on it kept the pill off screen while the keyboard was plainly up. It still
+     * answers "is a missing keyboard worth waiting for", and it is on the debug console.
      */
     @Volatile
     private var editableFieldFocused: Boolean = false
+
+    /**
+     * Which lookup produced [editableFieldFocused], for the debug console.
+     *
+     * "No field" and "a field we cannot read" are the same two words in a bug report and need
+     * completely different fixes, so which of the three routes answered is published with the flag.
+     */
+    @Volatile
+    private var focusSource: EditableFieldInspector.Source = EditableFieldInspector.Source.NONE
+
+    /**
+     * How many times the overlay window has been asked for.
+     *
+     * Zero after a keyboard has been seen means the orb was never eligible; a rising number with an
+     * orb that never appears means WindowManager is refusing it — and `overlayWindowError` says why.
+     */
+    @Volatile
+    private var overlayShowAttempts: Int = 0
 
     /**
      * Short re-check loop that runs while a field holds focus but the keyboard has not appeared yet.
@@ -80,6 +107,33 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
      */
     private var imeWatchJob: Job? = null
 
+    /**
+     * The always-on safety net: a slow poll that evaluates the overlay whether or not a single
+     * accessibility event ever arrives.
+     *
+     * Everything used to hang off `onAccessibilityEvent`. That is the platform's promise, and on
+     * several OEM builds it is not kept — a service that is connected, enabled and correct can be
+     * handed no event when a keyboard appears, and the only symptom is an orb that never shows. The
+     * loop below is independent of that promise: it re-runs the same decision every
+     * [WATCHDOG_INTERVAL_MS] while the screen is on, so the worst case for a missing event becomes an
+     * orb that appears half a second late instead of one that never appears.
+     */
+    private var watchdogJob: Job? = null
+
+    /** How many times the watchdog has ticked, and how many of those saw a keyboard. */
+    @Volatile
+    private var watchdogTicks: Long = 0
+
+    @Volatile
+    private var watchdogKeyboardTicks: Long = 0
+
+    /** Whether a dictation in flight is holding the orb up without a keyboard behind it. */
+    @Volatile
+    private var orbPinned: Boolean = false
+
+    private val powerManager: PowerManager
+        get() = getSystemService(POWER_SERVICE) as PowerManager
+
     private val windowManager: WindowManager
         get() = getSystemService(WINDOW_SERVICE) as WindowManager
 
@@ -87,7 +141,13 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
         super.onServiceConnected()
         runCatching {
             lifecycleRegistry.currentState = Lifecycle.State.STARTED
+            // `onServiceConnected` is not once per process: an OEM that kills the service and lets
+            // the user re-enable it can deliver it again on the same instance. Without this the
+            // second connection would add a second overlay window on top of the first and start a
+            // second watchdog, leaving two orbs stacked and two loops driving them.
+            if (setUpDone) tearDownWindows()
             setUp()
+            setUpDone = true
             OrbDiagnosticsBus.update {
                 it.copy(serviceConnected = true, setupError = null)
             }
@@ -118,42 +178,25 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
             )
         }
 
-        // Focus and keyboard visibility are separate questions, and the events that answer them
-        // come from different windows.
-        //
-        // The `TYPE_WINDOW_STATE_CHANGED` that fires when the keyboard rises carries the *IME's*
-        // package name, so those events must not be dropped — they are the only notice that the
-        // keyboard became visible. But an IME event's root is the keyboard itself, and
-        // `getRootInActiveWindow()` can resolve to that keyboard window rather than the app
-        // underneath it. Re-reading focus on such an event finds no editable field and hides the
-        // pill at the exact moment it should appear.
-        //
-        // So: focus is only ever re-read on events from the app, and cached. Keyboard visibility is
-        // re-read on everything.
-        val fromIme = imeDetector.isImePackage(event.packageName?.toString())
-
+        // Every subscribed event is a chance to re-check the screen, and no event's origin changes
+        // which answer is correct any more: focus comes from a lookup that searches every window, so
+        // running it while the keyboard is up is right rather than harmful. The old split — re-read
+        // focus only for events raised by an app, and cache it the rest of the time — is what left the
+        // orb hidden on builds where no such event ever arrived after the keyboard appeared.
         when (event.eventType) {
+            // A tap, a focus move or a window transition is the moment a keyboard is about to rise,
+            // so arm the short poll as well: several OEM keyboards never announce that they have
+            // finished appearing.
             AccessibilityEvent.TYPE_VIEW_FOCUSED,
             AccessibilityEvent.TYPE_VIEW_CLICKED,
-            AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
-            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
-            -> if (fromIme) onKeyboardChanged() else evaluateOverlayVisibility()
-        }
-    }
+            AccessibilityEvent.TYPE_WINDOWS_CHANGED,
+            -> evaluateOverlayVisibility(armWatch = true)
 
-    /**
-     * Handles an event raised by the keyboard itself: refresh only the keyboard geometry.
-     *
-     * Focus is deliberately not re-read, because the active window during these events is the IME.
-     */
-    private fun onKeyboardChanged() {
-        if (!::overlay.isInitialized) return
-        val now = System.currentTimeMillis()
-        if (now - lastEvaluationMs < EVALUATION_THROTTLE_MS) return
-        lastEvaluationMs = now
-        Log.i(TAG, "IME event → re-evaluating keyboard only")
-        applyOverlayState(refreshFocus = false)
+            // Re-evaluate, but do not arm a new poll: this one arrives per keystroke.
+            AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
+            -> evaluateOverlayVisibility(armWatch = false)
+        }
     }
 
     override fun onInterrupt() {
@@ -162,6 +205,8 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
 
     override fun onDestroy() {
         stopImeWatch()
+        watchdogJob?.cancel()
+        watchdogJob = null
         imeProbe?.stop()
         imeProbe = null
         if (::overlay.isInitialized) overlay.dispose()
@@ -222,6 +267,27 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
                 .filter { it == ProcessingEngine.LOCAL }
                 .collect { TyporbApp.warmUp(this@TyporbAccessibilityService) }
         }
+
+        // Started last, after every signal it reads exists.
+        startWatchdog()
+    }
+
+    /**
+     * Releases the windows and jobs left behind by a previous connection (see [onServiceConnected]).
+     */
+    private fun tearDownWindows() {
+        stopImeWatch()
+        watchdogJob?.cancel()
+        watchdogJob = null
+        imeProbe?.stop()
+        imeProbe = null
+        if (::overlay.isInitialized) {
+            overlay.removeNow()
+            overlay.dispose()
+        }
+        coordinator?.release()
+        coordinator = null
+        overlayVisible = false
     }
 
     
@@ -231,72 +297,99 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
     /**
      * The one place that decides whether the pill should exist.
      *
-     * Both conditions must hold: an editable field holds input focus, and the IME is on screen.
-     * Either one dropping out hides the pill immediately.
+     * @param armWatch whether this evaluation may start the short poll that catches a keyboard which
+     *   never announces itself. `true` for the events that precede a keyboard — a tap, a focus move,
+     *   a window change — and `false` for the per-keystroke ones.
      */
-    private fun evaluateOverlayVisibility() {
+    private fun evaluateOverlayVisibility(armWatch: Boolean) {
         if (!::overlay.isInitialized) return
         val now = System.currentTimeMillis()
         if (now - lastEvaluationMs < EVALUATION_THROTTLE_MS) return
         lastEvaluationMs = now
 
-        // [applyOverlayState] answers "does a field hold focus", i.e. "are we only waiting on the
-        // keyboard". These branches were previously swapped, which meant the poll that exists
-        // precisely to catch a slow-rising keyboard was cancelled at the moment it was needed and
-        // started when it was pointless.
-        if (applyOverlayState(refreshFocus = true)) {
-            startImeWatch()
-        } else {
-            stopImeWatch()
-        }
+        val imeState = applyOverlayState()
+        // Only ever look for a keyboard that is not there yet, and only from an interactive event:
+        // once the keyboard is up there is nothing left to wait for, and re-arming on every keystroke
+        // would run a 120 ms timer for as long as the user keeps typing.
+        // A pinned orb has nothing left to wait for either: work is in flight, and the poll exists
+        // only to catch a keyboard that has not appeared yet.
+        if (imeState.visible || orbPinned) stopImeWatch() else if (armWatch) startImeWatch()
     }
 
     /**
      * Applies the current focus + IME state to the overlay window.
      *
-     * @param refreshFocus whether to re-read the focused field. Pass `false` whenever the caller is
-     *   running on a timer or on an IME event: during those the active window is the keyboard, so a
-     *   fresh read would clear [editableFieldFocused] and hide a pill that is correctly eligible.
-     * @return `true` when an editable field holds focus — i.e. we are only waiting on the keyboard,
-     *   and a re-check is worth scheduling.
+     * **The keyboard being on screen is the whole condition.** It used to be "an editable field holds
+     * focus *and* the keyboard is up", and the first half is not dependable: on several OEM builds —
+     * MIUI among them — the focused field either does not report itself as editable or cannot be read
+     * at all, so the pill stayed hidden on a phone whose keyboard was plainly visible. The keyboard is
+     * the reliable half of the pair: the platform only puts a soft keyboard on screen for a
+     * text-editing session, and the keyboard's own window is a fact any accessibility service with
+     * `flagRetrieveInteractiveWindows` can read.
+     *
+     * The field is therefore evidence and diagnostics rather than a precondition. It still decides
+     * whether a keyboard that has not appeared yet is worth polling for.
+     *
+     * @return the keyboard state this evaluation acted on.
      */
-    private fun applyOverlayState(refreshFocus: Boolean): Boolean {
-        if (!::overlay.isInitialized) return false
+    private fun applyOverlayState(checkWindowLiveness: Boolean = false): ImeDetector.ImeState {
+        if (!::overlay.isInitialized) return ImeDetector.ImeState.Hidden
 
-        if (refreshFocus) {
-            editableFieldFocused =
-                EditableFieldInspector.findFocusedEditable(getRootInActiveWindow()) != null
-        }
+        // Re-read on every evaluation, IME-sourced events included: the probe searches every window,
+        // so unlike the old active-window lookup it cannot be shadowed by the keyboard window.
+        val focus = EditableFieldInspector.probe(this, getRootInActiveWindow())
+        editableFieldFocused = focus.isFieldFocused
+        focusSource = focus.source
+
+        val dictation = currentDictationState()
+        orbPinned = dictation.pinsOrb()
 
         val imeState = imeDetector.currentState(screenHeightPx())
-        val shouldShow = editableFieldFocused && imeState.visible
-        if (shouldShow) {
-            if (overlayVisible) {
-                overlay.updateKeyboardHeight(imeState.heightPx)
-            } else {
-                // Only treat the pill as shown when the window really made it on screen.
-                overlayVisible = overlay.show(imeState.heightPx)
-            }
-        } else {
-            hideOverlay()
+
+        // A window the platform took away behind our back — an OEM's own housekeeping, a display
+        // change — would otherwise leave the orb recorded as visible and never shown again. Only the
+        // watchdog asks this question: it ticks far enough apart that a freshly added window has
+        // certainly attached, so a `false` here is a fact rather than a race with the first frame.
+        if (checkWindowLiveness && overlayVisible && !overlay.isAttached) {
+            OrbDiagnosticsBus.note("orb window vanished; recreating")
+            overlay.removeNow()
+            // A window type this build keeps losing is exactly the one to stop leading with.
+            overlay.useFallbackWindowTypeNext()
+            overlayVisible = false
         }
 
-        publishDiagnostics(imeState.heightPx, imeState.visible, shouldShow)
-        return editableFieldFocused
+        if (!orbVisibility(imeState.visible, dictation)) {
+            hideOverlay()
+        } else if (overlayVisible) {
+            overlay.updateKeyboardHeight(imeState.heightPx)
+        } else {
+            overlayShowAttempts++
+            // Only treat the pill as shown when the window really made it on screen.
+            overlayVisible = overlay.show(imeState.heightPx)
+        }
+
+        publishDiagnostics(imeState.heightPx, imeState.visible)
+        return imeState
     }
 
     /** Mirrors the decision just made into the bus the Settings screen renders. */
-    private fun publishDiagnostics(imeHeightPx: Int, imeVisible: Boolean, shouldShow: Boolean) {
-        val nextOverlay = if (shouldShow) overlayVisible else false
+    private fun publishDiagnostics(imeHeightPx: Int, imeVisible: Boolean) {
         val insetPx = if (::imeDetector.isInitialized) imeDetector.insetHeightPx else 0
         val windowsSeen = if (::imeDetector.isInitialized) imeDetector.lastWindowsSeen else 0
         val imeWindowFound = if (::imeDetector.isInitialized) imeDetector.lastImeWindowFound else false
-        val summary = "focus=$editableFieldFocused ime=$imeVisible/${imeHeightPx}px orb=$nextOverlay"
+        val summary = "focus=$editableFieldFocused(${focusSource.label}) ime=$imeVisible/${imeHeightPx}px " +
+            "orb=$overlayVisible pinned=$orbPinned attempts=$overlayShowAttempts"
 
         OrbDiagnosticsBus.update {
             it.copy(
                 editableFieldFocused = editableFieldFocused,
-                overlayVisible = nextOverlay,
+                focusSource = focusSource.label,
+                overlayVisible = overlayVisible,
+                overlayShowAttempts = overlayShowAttempts,
+                watchdogTicks = watchdogTicks,
+                watchdogKeyboardTicks = watchdogKeyboardTicks,
+                orbPinned = orbPinned,
+                overlayAttached = if (::overlay.isInitialized) overlay.isAttached else false,
                 imeVisible = imeVisible,
                 imeHeightPx = imeHeightPx,
                 imeInsetPx = insetPx,
@@ -322,11 +415,12 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
     }
 
     /**
-     * Polls briefly while a field is focused but the keyboard is still animating in, so the pill
-     * appears the moment the IME window lands even when no accessibility event announces it.
+     * Polls briefly while the keyboard has not appeared yet, so the pill appears the moment the IME
+     * window lands even when no accessibility event announces it.
      *
-     * Focus is not re-read on each tick: by the time a tick fires the keyboard may already be the
-     * active window, so the cached value from the app's own events is the trustworthy one.
+     * Focus is re-read on each tick like on any other evaluation: [EditableFieldInspector.probe] is
+     * window-agnostic, so a tick that runs while the keyboard is rising cannot clear the flag the way
+     * the old active-window lookup could — which is why the previous revision had to stop polling.
      */
     private fun startImeWatch() {
         if (imeWatchJob?.isActive == true) return
@@ -335,10 +429,9 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
                 val deadline = SystemClock.uptimeMillis() + IME_WATCH_WINDOW_MS
                 while (SystemClock.uptimeMillis() < deadline) {
                     delay(IME_WATCH_INTERVAL_MS)
-                    // Keep polling for as long as a field still holds focus; that window is exactly
-                    // the one where the keyboard is rising. Previously this returned on the *first*
-                    // tick where focus was present, i.e. before the keyboard had appeared.
-                    if (!applyOverlayState(refreshFocus = false)) return@launch
+                    // Stop as soon as there is nothing left to wait for: the keyboard is on screen, or
+                    // a dictation started and the orb is pinned by it anyway.
+                    if (applyOverlayState().visible || orbPinned) return@launch
                 }
             } finally {
                 imeWatchJob = null
@@ -350,6 +443,33 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
         imeWatchJob?.cancel()
         imeWatchJob = null
     }
+
+    /**
+     * Runs [applyOverlayState] on a slow timer for as long as the service is connected and the screen
+     * is on, so the orb does not depend on any event being delivered.
+     *
+     * 600 ms is invisible next to the keyboard's own show animation while costing one window query
+     * plus one focus query per tick, and it is skipped entirely while the screen is off.
+     */
+    private fun startWatchdog() {
+        if (watchdogJob?.isActive == true) return
+        watchdogJob = lifecycleScope.launch {
+            while (isActive) {
+                delay(WATCHDOG_INTERVAL_MS)
+                if (!isScreenOn()) continue
+                watchdogTicks++
+                val imeState = applyOverlayState(checkWindowLiveness = true)
+                if (imeState.visible) watchdogKeyboardTicks++
+            }
+        }
+    }
+
+    /** The dictation's current UI state, or [OverlayUiState.Idle] before a coordinator exists. */
+    private fun currentDictationState(): OverlayUiState =
+        coordinator?.state?.value ?: OverlayUiState.Idle
+
+    private fun isScreenOn(): Boolean =
+        runCatching { powerManager.isInteractive }.getOrDefault(true)
 
     private fun onPillTapped() {
         val dictation = coordinator ?: return
@@ -437,5 +557,8 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
 
         /** Keyboard-show animation on a budget device is ~200-400ms. */
         const val IME_WATCH_INTERVAL_MS = 120L
+
+        /** How often the always-on watchdog re-checks the screen; see [startWatchdog]. */
+        const val WATCHDOG_INTERVAL_MS = 600L
     }
 }

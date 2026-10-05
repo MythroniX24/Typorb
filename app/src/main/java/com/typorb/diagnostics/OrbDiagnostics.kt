@@ -9,9 +9,9 @@ import kotlinx.coroutines.flow.update
  * A snapshot of everything Typorb knows about *why* the orb is or is not on screen.
  *
  * The orb's visibility depends on a chain of independent facts — the service is connected, the
- * system is delivering events, a field holds focus, a keyboard window exists and can be measured,
- * and WindowManager accepted the overlay. When any link breaks the only symptom is "nothing
- * appears", which is exactly the situation that made this screen necessary.
+ * system is delivering events, a keyboard window exists and can be measured, and WindowManager
+ * accepted the overlay. When any link breaks the only symptom is "nothing appears", which is exactly
+ * the situation that made this screen necessary.
  *
  * The accessibility service and the launcher activity live in the same process, so a plain
  * process-wide bus is all that is needed to get these numbers from one to the other.
@@ -33,10 +33,40 @@ data class OrbDiagnostics(
     val imeVisible: Boolean = false,
     /** IME height as reported by `WindowInsets`, the independent third signal. */
     val imeInsetPx: Int = 0,
-    /** The cached "an editable field holds focus" flag. */
+    /** Whether an editable field held focus at the last evaluation. Reported, but no longer gated on. */
     val editableFieldFocused: Boolean = false,
+    /**
+     * Which lookup produced [editableFieldFocused] — `system findFocus`, `active-window findFocus`,
+     * `window walk` or `none`.
+     *
+     * "No field focused" and "a field the service cannot read" are the same two words in a bug report
+     * and need completely different fixes, so the route is published next to the flag.
+     */
+    val focusSource: String? = null,
     /** Whether the overlay window is currently on screen. */
     val overlayVisible: Boolean = false,
+    /**
+     * How many times an overlay window has been asked for.
+     *
+     * `0` after a keyboard has been seen means the orb was never eligible; a number that keeps
+     * climbing while nothing appears means WindowManager is refusing it, and [overlayWindowError]
+     * says why.
+     */
+    val overlayShowAttempts: Int = 0,
+    /**
+     * How many times the always-on watchdog has looked at the screen.
+     *
+     * The watchdog is the path that does not depend on accessibility events at all, so a rising
+     * number here proves the service is alive even when [eventCount] sits at zero — the failure that
+     * previously had no symptom other than "nothing ever appears".
+     */
+    val watchdogTicks: Long = 0,
+    /** Of those ticks, how many saw a keyboard window. `0` after typing pinpoints the detector. */
+    val watchdogKeyboardTicks: Long = 0,
+    /** Whether a dictation in flight is holding the orb on screen with no keyboard behind it. */
+    val orbPinned: Boolean = false,
+    /** Whether the orb's view is genuinely attached to the display, not just recorded as shown. */
+    val overlayAttached: Boolean = false,
     /** Whether the always-on invisible IME probe window could be attached. */
     val probeAttached: Boolean = false,
     /**
@@ -87,8 +117,11 @@ data class OrbDiagnostics(
         appendLine("overlay perm      : ${if (overlayPermissionGranted) "granted" else "not granted"}")
         overlayWindowError?.let { appendLine("orb addView error : $it") }
         probeWindowError?.let { appendLine("probe addView err : $it") }
-        appendLine("field focused     : $editableFieldFocused")
-        appendLine("orb on screen     : $overlayVisible")
+        appendLine("field focused     : $editableFieldFocused (${focusSource ?: "—"})")
+        appendLine("orb on screen     : $overlayVisible (asked ${overlayShowAttempts}x)")
+        appendLine("orb window live   : $overlayAttached")
+        appendLine("orb pinned        : $orbPinned")
+        appendLine("watchdog          : $watchdogTicks checks, $watchdogKeyboardTicks with a keyboard")
         val age = if (lastEvaluationAtMs == 0L) {
             "never"
         } else {
@@ -113,9 +146,14 @@ object OrbDiagnosis {
     fun headline(d: OrbDiagnostics): String = when {
         d.setupError != null -> "Typorb failed to start"
         !d.serviceConnected -> "Typorb is not running"
-        d.eventCount == 0L -> "Running, but receiving no events"
-        !d.editableFieldFocused -> "No text field has focus"
-        !d.imeVisible -> "Keyboard not detected"
+        // Only a problem when the watchdog is silent too: the watchdog is the path that shows the
+        // orb without any events at all, so a service that receives nothing every 600 ms is broken
+        // while one that receives nothing but ticks is fine.
+        d.eventCount == 0L && d.watchdogTicks == 0L -> "Running, but receiving no events"
+        // A field that cannot be read is deliberately absent: it no longer keeps the orb hidden, so
+        // naming it as the reason something is wrong would send the user after the wrong thing.
+        // A pinned orb (dictation in flight) is also exempt: it is up on purpose.
+        !d.imeVisible && !d.orbPinned -> "Keyboard not detected"
         !d.overlayVisible -> "Overlay window not added"
         else -> "Orb is on screen"
     }
@@ -124,11 +162,11 @@ object OrbDiagnosis {
         d.setupError != null -> d.setupError
         !d.serviceConnected ->
             "Turn Typorb on in Settings → Accessibility, then reopen this screen."
-        d.eventCount == 0L ->
+        d.eventCount == 0L && d.watchdogTicks == 0L ->
             "The service is enabled but the system is sending it nothing — usually it was enabled " +
                 "and then killed by the battery optimiser."
-        !d.editableFieldFocused ->
-            "Tap inside a real text field (a message box, a search bar) and come back to this screen."
+        d.orbPinned && !d.imeVisible ->
+            "Still dictating, so the orb stays on screen without a keyboard."
         !d.imeVisible -> when {
             d.windowsSeen == 0 -> "The service can see no windows at all."
             !d.imeWindowFound -> "No window is tagged as a keyboard."
@@ -167,7 +205,9 @@ object AccessibilityEventNames {
         8 -> "TYPE_VIEW_FOCUSED"
         16 -> "TYPE_VIEW_TEXT_CHANGED"
         32 -> "TYPE_WINDOW_STATE_CHANGED"
+        512 -> "TYPE_VIEW_TEXT_SELECTION_CHANGED"
         2048 -> "TYPE_WINDOW_CONTENT_CHANGED"
+        4096 -> "TYPE_WINDOWS_CHANGED"
         else -> "type $type"
     }
 }

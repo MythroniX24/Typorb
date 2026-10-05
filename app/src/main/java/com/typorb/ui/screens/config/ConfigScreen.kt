@@ -244,6 +244,9 @@ private fun DebugConsoleCard(onOpenAccessibility: () -> Unit) {
                 "· ${diagnostics.lastEventPackage?.substringAfterLast('.') ?: "—"}",
         )
         DebugRow("Text field focused", yesNo(diagnostics.editableFieldFocused))
+        // Which of the three lookups answered. "No field" and "unreadable field" look identical
+        // otherwise, and only one of them is a problem.
+        DebugRow("Focus lookup", diagnostics.focusSource ?: "—")
         DebugRow("Windows visible", diagnostics.windowsSeen.toString())
         DebugRow("Keyboard window found", yesNo(diagnostics.imeWindowFound))
         DebugRow("Keyboard height", "${diagnostics.imeHeightPx} px")
@@ -251,6 +254,16 @@ private fun DebugConsoleCard(onOpenAccessibility: () -> Unit) {
         DebugRow("Keyboard (inset signal)", "${diagnostics.imeInsetPx} px")
         DebugRow("IME package", diagnostics.imePackage?.substringAfterLast('.') ?: "unknown")
         DebugRow("Overlay window", yesNo(diagnostics.overlayVisible))
+        // "Recorded as on screen" and "really attached" can disagree after an OEM takes the window
+        // away behind the app's back — the watchdog acts on exactly this pair.
+        DebugRow("Orb window attached", yesNo(diagnostics.overlayAttached))
+        DebugRow("Orb pinned", yesNo(diagnostics.orbPinned))
+        DebugRow(
+            label = "Orb watchdog",
+            value = "${diagnostics.watchdogTicks} checks · " +
+                "${diagnostics.watchdogKeyboardTicks} with keyboard",
+        )
+        DebugRow("Orb show attempts", diagnostics.overlayShowAttempts.toString())
         DebugRow("Overlay window type", diagnostics.overlayWindowType ?: "—")
         DebugRow("Inset probe", if (diagnostics.probeAttached) "attached" else "not attached")
         DebugRow("Last check", lastCheckLabel(diagnostics.lastEvaluationAtMs))

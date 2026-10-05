@@ -74,6 +74,9 @@ class OverlayController(
     private var keyboardHeightPx: Int = 0
     private var removePending: Runnable? = null
 
+    /** Set by [useFallbackWindowTypeNext] when the preferred type has just been lost on this device. */
+    private var preferFallbackWindowType = false
+
     /**
      * Supplies the saved-state and view-model owners for the overlay window, shared by every
      * ComposeView this controller creates so a detach/reattach cycle cannot end up with a window
@@ -97,6 +100,15 @@ class OverlayController(
     val isShowing: Boolean get() = view != null
 
     /**
+     * Whether the orb's view is genuinely attached to the display.
+     *
+     * [isShowing] answers "did `addView` succeed"; this answers "is the window really there now". A
+     * platform that removes an overlay window behind the app's back leaves the first `true` and the
+     * second `false`, which is the only way the service can notice it has to add the orb again.
+     */
+    val isAttached: Boolean get() = view?.isAttachedToWindow == true
+
+    /**
      * Shows the pill, or re-positions it if it is already up.
      *
      * @return `true` when a window is on screen afterwards, so the caller never records the overlay
@@ -104,7 +116,17 @@ class OverlayController(
      */
     fun show(imeHeightPx: Int): Boolean {
         keyboardHeightPx = imeHeightPx
-        if (view != null) {
+        val existing = view
+        if (existing != null) {
+            // A hide that is still animating out has to be cancelled, not raced with: its delayed
+            // removal would take the window away *after* this call has already reported the orb as on
+            // screen, and the service would never add it again for the rest of the editing session.
+            removePending?.let { mainHandler.removeCallbacks(it) }
+            removePending = null
+            existing.animate().cancel()
+            existing.alpha = 1f
+            existing.scaleX = 1f
+            existing.scaleY = 1f
             applyLayout(state.value)
             return true
         }
@@ -201,14 +223,22 @@ class OverlayController(
      * refuses the first.
      */
     private fun candidateWindowTypes(): List<Int> = buildList {
-        add(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY)
-        if (canUseApplicationOverlay()) {
-            add(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            } else {
-                @Suppress("DEPRECATION")
-                WindowManager.LayoutParams.TYPE_PHONE
-            })
+        val accessibilityOverlay = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+        val applicationOverlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        } else {
+            @Suppress("DEPRECATION")
+            WindowManager.LayoutParams.TYPE_PHONE
+        }
+        // Order only — both are attempted either way, because which one the platform accepts is only
+        // knowable by trying. The fallback leads once the accessibility type has been lost on this
+        // device (see [useFallbackWindowTypeNext]).
+        if (preferFallbackWindowType && canUseApplicationOverlay()) {
+            add(applicationOverlay)
+            add(accessibilityOverlay)
+        } else {
+            add(accessibilityOverlay)
+            if (canUseApplicationOverlay()) add(applicationOverlay)
         }
     }
 
@@ -237,6 +267,36 @@ class OverlayController(
             removePending = null
         }
         animateOut(composeView) { mainHandler.postDelayed(hideRunnable, REMOVE_DELAY_MS) }
+    }
+
+    /**
+     * Asks every later [show] to lead with the fallback window type.
+     *
+     * Called after a window disappeared on its own: whatever the platform's reason, the type it just
+     * lost is the one to stop trying first.
+     */
+    fun useFallbackWindowTypeNext() {
+        preferFallbackWindowType = true
+    }
+
+    /**
+     * Removes the window immediately, without the exit animation.
+     *
+     * Used when the window has to be re-created (it vanished, or the service reconnected): the
+     * animated path would race with the replacement `addView`.
+     */
+    fun removeNow() {
+        removePending?.let { mainHandler.removeCallbacks(it) }
+        removePending = null
+        val composeView = view
+        view = null
+        params = null
+        windowTypeInUse = null
+        if (composeView != null) {
+            composeView.animate().cancel()
+            runCatching { windowManager.removeView(composeView) }
+                .onFailure { Log.w(TAG, "Overlay already detached", it) }
+        }
     }
 
     private fun applyLayout(currentState: OverlayUiState) {

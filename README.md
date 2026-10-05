@@ -30,18 +30,38 @@ completely offline.
 
 ### 1. When does Typorb appear?
 
-Both conditions must hold, checked on every focus/click/window-change event:
+**A visible soft keyboard is the condition**, checked on every tap/focus/window-change event, by a
+short 120 ms poll while one is expected but not yet on screen (several OEM keyboards never announce
+that they have finished appearing), and — independently of every event — by an always-on 600 ms
+watchdog that runs for as long as the service is connected and the screen is on. The watchdog exists
+because event delivery is the platform's promise and some OEM builds do not keep it: without it, a
+service handed no event when the keyboard appears has an orb that never shows and no symptom beyond
+that.
 
-1. **An editable field owns input focus** — `AccessibilityNodeInfo.isEditable`, plus a class-name
-   check for `EditText` / `AutoCompleteTextView` / `WebView` (the `isTextEditable` flag is a hidden
-   API and is deliberately not used).
-2. **The soft keyboard is on screen** — the IME window is located by package in
-   `AccessibilityService.getWindows()`, and its height comes from the root node's screen rectangle
+1. **The soft keyboard is on screen** — the IME window is found by its
+   `AccessibilityWindowInfo.TYPE_INPUT_METHOD` tag in `AccessibilityService.getWindows()`, falling
+   back to a package match and then to the `WindowInsetsCompat.Type.ime()` bottom inset measured by a
+   1×1 probe window. Its height comes from the root node's screen rectangle
    (`AccessibilityWindowInfo.getBounds` is hidden too). A floating/split keyboard counts as "no
-   keyboard". `WindowInsetsCompat.Type.ime()` is wired as a secondary signal for OEMs that do not
-   expose the IME window.
+   keyboard".
+2. **A focused editable field is reported alongside it** — through
+   `AccessibilityService.findFocus(FOCUS_INPUT)` first, which searches every window and therefore
+   still resolves while the keyboard is up, then the active window, then a tree walk. A field counts
+   as editable when it reports `isEditable`, belongs to the `EditText` family, or advertises **both**
+   `ACTION_SET_TEXT` and `ACTION_SET_SELECTION` — the route that catches Compose and web fields, which
+   report neither flag nor a useful class name. It is reported in Settings (`Focus lookup`) and used to
+   decide whether a not-yet-visible keyboard is worth waiting for. It is deliberately **not** a
+   precondition: on several OEM builds the focused field cannot be read at all, and gating on it kept
+   the orb off screen while the keyboard was plainly visible.
 
-If either condition drops, the pill animates out immediately — including while it is recording.
+If the keyboard drops, the pill animates out — **unless a dictation is in flight**. Recording and
+processing states pin the orb on screen, because the microphone is still open and the orb is the only
+button that can stop it; an app that dismisses its keyboard mid-take must not take that away. The
+pinned orb disappears on its own as soon as the take finishes, or as soon as the state returns to idle.
+
+A window the platform removes behind the app's back (an OEM's own housekeeping, a display change) is
+noticed on the next watchdog tick: the stale window is dropped, the other window type leads the retry,
+and the orb is added again.
 
 ### 2. The Typorb lifecycle
 
@@ -168,14 +188,16 @@ tensor contract.
 
 ```bash
 ./gradlew assembleDebug           # app/build/outputs/apk/debug/app-debug.apk
-./gradlew testDebugUnitTest       # 46 unit tests (see below)
+./gradlew testDebugUnitTest       # 118 unit tests (see below)
 sh tools/fetch-whisper-model.sh   # optional: bake the weights in for offline dev
 ```
 
-Unit tests cover the pieces that can be proved without a device: pill geometry, transcript cleanup,
-the FFT/mel front-end (frame counts, filterbank weighting, tone placement), the byte-level BPE
-decoder, the model-download integrity gate (SHA-256 accepts the real digest and rejects truncated
-files) and the device-tuning heuristics. A smoke test also runs against the real vocabulary whenever
+Unit tests cover the pieces that can be proved without a device: what counts as an editable field and
+when the orb is allowed to exist (the two rules its appearance turns on), pill geometry, transcript
+cleanup, the FFT/mel front-end
+(frame counts, filterbank weighting, tone placement), the byte-level BPE decoder, the model-download
+integrity gate (SHA-256 accepts the real digest and rejects truncated files) and the device-tuning
+heuristics. A smoke test also runs against the real vocabulary whenever
 the model assets are present, and skips otherwise.
 
 Requires JDK 17. `compileSdk 34`, `minSdk 26`, `targetSdk 34`, AGP 8.5.2, Kotlin 1.9.24, Compose BOM
@@ -189,6 +211,28 @@ Requires JDK 17. `compileSdk 34`, `minSdk 26`, `targetSdk 34`, AGP 8.5.2, Kotlin
 artifact.
 
 ---
+
+## When the orb does not appear
+
+The Settings → Debug console answers this from the device itself — read the verdict line first, then
+`Orb watchdog`, `Keyboard window found`, `Orb show attempts` and `Orb window error`:
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `Accessibility service: no` | Disabled, or killed by the battery optimiser | Re-enable it, then lock Typorb in Recents |
+| Verdict "Keyboard not detected" | Signal is not reaching the service | Check `IME probe window`; grant "Display over other apps" and restart the phone |
+| Verdict "Overlay window not added" | WindowManager refused the orb | The verbatim error is printed below the rows; grant "Display over other apps" so both window types can be tried |
+| Watchdog stops climbing | Service killed in background | Settings → Apps → Typorb → Battery → **No restrictions**, and enable **Autostart** |
+
+MIUI/HyperOS specifics on the Redmi 8A class of devices:
+
+* **Battery** → Apps → Typorb → *No restrictions*. MIUI otherwise stops accessibility services after a
+  while, which looks exactly like "the orb never appears".
+* **Autostart** → enable Typorb, and lock it in Recents (the padlock on the app card).
+* **Developer options → MIUI optimization** can block overlay windows on some builds; toggling it off
+  is a last resort, not a requirement.
+* Permissions → **Display pop-up windows while running in background** must be on for the fallback
+  overlay type to be usable.
 
 ## Permissions
 

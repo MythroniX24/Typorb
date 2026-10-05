@@ -34,9 +34,28 @@ class OrbDiagnosisTest {
     }
 
     @Test
-    fun `no focused field is named as the blocker`() {
-        val d = OrbDiagnostics(serviceConnected = true, eventCount = 42)
-        assertEquals("No text field has focus", d.headline())
+    fun `a field the service cannot read no longer hides the orb`() {
+        // The case that cost a release: the keyboard is up, the focused field cannot be read as
+        // editable, and the verdict named the field while nothing appeared on screen. The keyboard is
+        // the condition now, so exactly this state must report the orb as working.
+        val unreadableField = OrbDiagnostics(
+            serviceConnected = true,
+            eventCount = 42,
+            editableFieldFocused = false,
+            focusSource = "none",
+            imeVisible = true,
+            imeHeightPx = 508,
+            overlayVisible = true,
+            overlayShowAttempts = 1,
+        )
+        assertEquals("Orb is on screen", unreadableField.headline())
+
+        // And the verdict that used to be produced here must not be reachable at all: without a
+        // keyboard there is nothing to place the orb above.
+        assertEquals(
+            "Keyboard not detected",
+            unreadableField.copy(imeVisible = false, overlayVisible = false).headline(),
+        )
     }
 
     @Test
@@ -144,7 +163,9 @@ class OrbDiagnosisTest {
             imeInsetPx = 500,
             probeAttached = true,
             editableFieldFocused = true,
+            focusSource = "system findFocus",
             overlayVisible = true,
+            overlayShowAttempts = 2,
             lastEvaluationAtMs = 1_000L,
             breadcrumbs = listOf("focus=true"),
         )
@@ -155,11 +176,65 @@ class OrbDiagnosisTest {
         assertTrue(report.contains("TYPE_VIEW_FOCUSED"))
         assertTrue(report.contains("com.google.android.inputmethod.latin"))
         assertTrue(report.contains("keyboard height   : 508px"))
+        assertTrue(report.contains("(system findFocus)"))
+        assertTrue(report.contains("asked 2x"))
         assertTrue(report.contains("IME probe window  : attached"))
         assertTrue(report.contains("orb on screen     : true"))
         assertTrue(report.contains("2500ms ago"))
         assertTrue(report.contains("focus=true"))
         assertTrue(!report.contains("Typorb failed"))
+    }
+
+    @Test
+    fun `a silent event stream is fine while the watchdog is running`() {
+        // The watchdog is the path that shows the orb without any event at all, so "no events" is only
+        // a fault when the watchdog is silent too — which is the case it was written for.
+        val covered = OrbDiagnostics(
+            serviceConnected = true,
+            eventCount = 0,
+            watchdogTicks = 120,
+            imeVisible = true,
+            imeHeightPx = 508,
+            overlayVisible = true,
+        )
+        assertEquals("Orb is on screen", covered.headline())
+
+        assertEquals(
+            "Running, but receiving no events",
+            covered.copy(watchdogTicks = 0, overlayVisible = false).headline(),
+        )
+    }
+
+    @Test
+    fun `a pinned orb without a keyboard is not reported as a keyboard fault`() {
+        val d = OrbDiagnostics(
+            serviceConnected = true,
+            eventCount = 42,
+            watchdogTicks = 40,
+            imeVisible = false,
+            orbPinned = true,
+            overlayVisible = true,
+        )
+        assertEquals("Orb is on screen", d.headline())
+        assertTrue(d.detail().contains("Still dictating"))
+    }
+
+    @Test
+    fun `report carries the watchdog and window liveness rows`() {
+        val d = OrbDiagnostics(
+            serviceConnected = true,
+            eventCount = 9,
+            watchdogTicks = 300,
+            watchdogKeyboardTicks = 42,
+            orbPinned = true,
+            overlayAttached = true,
+            overlayVisible = true,
+            imeVisible = true,
+        )
+        val report = d.asReport(nowMs = 2_000L)
+        assertTrue(report.contains("watchdog          : 300 checks, 42 with a keyboard"))
+        assertTrue(report.contains("orb pinned        : true"))
+        assertTrue(report.contains("orb window live   : true"))
     }
 
     @Test

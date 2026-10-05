@@ -48,7 +48,7 @@ class TextInjector(private val service: AccessibilityService) {
 
     /** Node currently holding input focus, if it is editable. */
     fun focusedEditableNode(): AccessibilityNodeInfo? =
-        EditableFieldInspector.findFocusedEditable(service.getRootInActiveWindow())
+        EditableFieldInspector.focusedEditableNode(service, service.getRootInActiveWindow())
 
     /**
      * The focused node can momentarily disappear while an IME swaps windows, so retry briefly before
@@ -56,7 +56,11 @@ class TextInjector(private val service: AccessibilityService) {
      */
     private suspend fun awaitFocusedField(): AccessibilityNodeInfo? {
         repeat(FOCUS_ATTEMPTS) {
-            EditableFieldInspector.findFocusedEditable(service.getRootInActiveWindow())?.let { return it }
+            // Asked of the whole screen rather than of one window: while a keyboard is up,
+            // `getRootInActiveWindow()` can name the keyboard itself, and hunting inside it for a text
+            // field is how a dictation would end up somewhere other than where the user was writing.
+            EditableFieldInspector.focusedEditableNode(service, service.getRootInActiveWindow())
+                ?.let { return it }
             delay(FOCUS_RETRY_DELAY_MS)
         }
         return null

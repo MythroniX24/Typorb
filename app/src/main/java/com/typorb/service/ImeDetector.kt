@@ -60,10 +60,6 @@ class ImeDetector(context: Context, private val service: AccessibilityService) {
     /** The IME package the system reports as default, or `null` when it cannot be read. */
     val currentImePackage: String? get() = imePackage
 
-    /** `true` when [packageName] is the IME whose events we recognise as keyboard lifecycle events. */
-    fun isImePackage(packageName: String?): Boolean =
-        packageName != null && imePackage != null && packageName == imePackage
-
     /**
      * Feeds an externally measured IME height (`WindowInsetsCompat.Type.ime()` bottom inset) in as a
      * secondary signal. Pass `0` when the IME is known to be hidden.
