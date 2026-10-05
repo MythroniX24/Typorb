@@ -62,7 +62,7 @@ class WhisperOnnxEngine(
      */
     private val downloadedFiles: suspend () -> ModelFiles? = { null },
     /** Enables the GPU backend when the device is capable; always falls back to XNNPACK on failure. */
-    private val preferNnapi: Boolean = false,
+    private val preferNnapi: () -> Boolean = { false },
 ) {
 
     private val loadLock = Mutex()
@@ -218,7 +218,7 @@ class WhisperOnnxEngine(
             setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
             setMemoryPatternOptimization(true)
 
-            if (preferNnapi && SessionTuning.isNnapiEligible(Build.VERSION.SDK_INT)) {
+            if (preferNnapi() && SessionTuning.isNnapiEligible(Build.VERSION.SDK_INT)) {
                 runCatching { addNnapi() }
                     .onFailure { Log.w(TAG, "NNAPI unavailable, staying on CPU", it) }
             } else {

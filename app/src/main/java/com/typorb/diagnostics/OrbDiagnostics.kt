@@ -191,6 +191,9 @@ object DictationStages {
     /** Not delivered, but left on the clipboard for a manual paste. */
     const val COPIED = "copied to clipboard"
 
+    /** The dictation was captured but produced no words at all. */
+    const val EMPTY = "empty transcript"
+
     /** Ended in an error; [OrbDiagnostics.dictationError] carries the reason. */
     const val FAILED = "failed"
 }

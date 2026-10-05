@@ -218,7 +218,7 @@ tensor contract.
 
 ```bash
 ./gradlew assembleDebug           # app/build/outputs/apk/debug/app-debug.apk
-./gradlew testDebugUnitTest       # 131 unit tests (see below)
+./gradlew testDebugUnitTest       # 144 unit tests (see below)
 sh tools/fetch-whisper-model.sh   # optional: bake the weights in for offline dev
 ```
 
@@ -291,6 +291,30 @@ identity, so the stable key above is the prerequisite either way. Personal use f
 distribution account** (up to 20 devices, no government ID, no registration fee), and power users can
 keep installing unverified apps through the advanced flow. Apps distributed outside Play register in
 the Android Developer Console; Play Console covers Play apps automatically.
+
+## When the words do not appear
+
+A dictation that does not land is the one failure that is completely silent: the pill says something
+reassuring, the transcript is saved to history, and the text box is unchanged. So every injection
+route is *verified* rather than trusted, because `ACTION_SET_TEXT` returning `true` only means the
+action was performed — several apps (WhatsApp's message box among them) perform it and drop the text.
+
+The pipeline, in order, each step tried only after the last one was checked:
+
+1. **`ACTION_SET_TEXT`** into the field captured **when you tapped the orb**. The node is remembered
+   at tap time on purpose: dictation takes seconds, and by the time the transcript is ready you may
+   have moved the caret or the IME may have swapped windows — a field looked up *afterwards* is
+   regularly the wrong node. The existing text is read first and kept, so a dictation into a
+   half-written message **adds to it** instead of replacing it.
+2. **`ACTION_PASTE`** from the clipboard, with the original clipboard restored afterwards.
+3. **`ACTION_FOCUS` then `ACTION_SET_TEXT` again**, for fields that refuse a bare set-text until they
+   hold focus themselves.
+4. If all of that fails the words are **left on the clipboard** and the pill says
+   `Copied — long-press to paste.` The text is never silently dropped.
+
+Settings → Debug console reports the route and the exact reason: `Injection` names which step won
+(`ACTION_SET_TEXT`, `CLIPBOARD_PASTE`, `FOCUS_THEN_SET_TEXT`, `COPIED_TO_CLIPBOARD`) and, when
+something went wrong, which steps were refused and why.
 
 ## When the orb does not appear
 

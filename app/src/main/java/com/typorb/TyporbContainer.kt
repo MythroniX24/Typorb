@@ -49,7 +49,12 @@ class TyporbContainer(context: Context) {
                 // Resolved per call so a model downloaded after process start is picked up.
                 modelRepository.filesFor(selectedModelVariant)
             },
-            preferNnapi = settingsRepository.current().useGpuAcceleration,
+            // Read per load, not captured once. The engine is a process-lifetime `by lazy` singleton
+            // and the accessibility service builds it on the very first dictation, which is long
+            // before anyone visits Settings — capturing the value here froze whatever the setting
+            // happened to be at that moment, so switching acceleration in the dashboard did nothing
+            // until the process was killed.
+            preferNnapi = { settingsRepository.current().useGpuAcceleration },
         )
     }
 
@@ -98,7 +103,14 @@ class TyporbContainer(context: Context) {
 
     private val localEngine: TextProcessingEngine by lazy { LocalTextProcessor(whisperEngine) }
 
-    /** Picks the pipeline matching the user's current engine setting. */
+    /**
+     * Picks the pipeline matching the user's current engine setting.
+     *
+     * Both engines are long-lived singletons on purpose — a local session must not be torn down
+     * between dictations — so the *choice* is re-made from the settings snapshot passed in on every
+     * dictation rather than cached. That snapshot is read fresh when recording stops, which is what
+     * makes a switch in the dashboard take effect on the very next take instead of the next launch.
+     */
     fun engineFor(settings: com.typorb.data.TyporbSettings): TextProcessingEngine =
         if (settings.engine == com.typorb.model.ProcessingEngine.LOCAL) localEngine else cloudEngine
 

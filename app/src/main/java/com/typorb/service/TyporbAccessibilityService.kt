@@ -472,8 +472,22 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
     private fun isScreenOn(): Boolean =
         runCatching { powerManager.isInteractive }.getOrDefault(true)
 
+    /**
+     * A tap either starts or stops a dictation.
+     *
+     * The focused field is captured *before* the toggle, and only on the way into recording. This is
+     * the last instant the answer is certainly right: dictation then takes seconds, during which the
+     * user can move the caret, the IME can swap its window, and a field looked up afterwards is
+     * regularly the wrong node or no node at all — which is how a perfectly good transcript ended up
+     * with nowhere to go.
+     */
     private fun onPillTapped() {
         val dictation = coordinator ?: return
+        if (dictation.state.value is OverlayUiState.Idle ||
+            dictation.state.value is OverlayUiState.Failed
+        ) {
+            injector.rememberFocus()
+        }
         dictation.onToggle()
         if (dictation.state.value is OverlayUiState.Recording) {
             lastDictationStartedAtMs = System.currentTimeMillis()
@@ -505,6 +519,9 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
         val settingsAtInjection = container.settingsRepository.current()
         val startedAtMs = System.currentTimeMillis() - lastDictationStartedAtMs
         val result = injector.inject(text)
+        // The captured field belongs to one dictation; holding it would have the *next* one append
+        // into wherever this one happened to land.
+        injector.forgetFocus()
         // Recorded whatever the outcome: the method names the route that worked (or did not) and the
         // detail carries which of the focus lookups answered, which is the fact a report needs.
         OrbDiagnosticsBus.update {
@@ -513,6 +530,7 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
         when (result.method) {
             TextInjector.Method.ACTION_SET_TEXT,
             TextInjector.Method.CLIPBOARD_PASTE,
+            TextInjector.Method.FOCUS_THEN_SET_TEXT,
             -> {
                 haptics.confirm()
                 recordTranscript(text, settingsAtInjection, startedAtMs)

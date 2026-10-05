@@ -1,6 +1,7 @@
 package com.typorb.ui.overlay
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -16,6 +17,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -24,8 +26,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentSize
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Mic
@@ -34,6 +38,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -53,6 +58,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.typorb.data.TyporbSettings
 import com.typorb.model.OverlayUiState
+import com.typorb.overlay.OverlayMetrics
 import com.typorb.ui.theme.TyporbElevation
 import com.typorb.ui.theme.TyporbPalette
 import com.typorb.ui.theme.TyporbShapes
@@ -75,9 +81,21 @@ fun TyporbOverlayContent(
     cornerRadiusDp: Int = TyporbSettings.DEFAULT_OVERLAY_CORNER_DP,
     showWaveform: Boolean = true,
     contentPadding: Dp = 0.dp,
+    idleSizeDp: Int = TyporbSettings.DEFAULT_OVERLAY_SIZE_DP,
 ) {
     val shape = TyporbShapes.overlayCorner(cornerRadiusDp)
     val interactionSource = remember { MutableInteractionSource() }
+
+    // Press feedback. The window is the pill's own rectangle, so a tap is a resize *and* the only
+    // thing the user can see happen is the morph starting a beat later — which read as the tap not
+    // registering at all. Scaling down on press answers the finger immediately, under the finger,
+    // before any of the window bookkeeping runs.
+    val pressed by interactionSource.collectIsPressedAsState()
+    val pressScale by animateFloatAsState(
+        targetValue = if (pressed) PRESSED_SCALE else 1f,
+        animationSpec = tween(durationMillis = if (pressed) 90 else 220),
+        label = "press-scale",
+    )
 
     Box(
         modifier = Modifier
@@ -91,7 +109,15 @@ fun TyporbOverlayContent(
     ) {
         AnimatedContent(
             targetState = state,
-            transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(110)) },
+            // `clip = false` on the size transform: without it AnimatedContent clips the outgoing
+            // pill to the *incoming* pill's box for the length of the crossfade, and because the
+            // incoming capsule is much wider than the outgoing square orb, a failure or a recording
+            // stop visibly guillotined the orb it was animating away from.
+            transitionSpec = {
+                fadeIn(tween(FADE_IN_MS)) togetherWith
+                    fadeOut(tween(FADE_OUT_MS)) using
+                    SizeTransform(clip = false)
+            },
             // Keyed on the state's *kind*, never on the state itself. Recording publishes a new
             // amplitude list roughly fifteen times a second, and with the default key every one of
             // those counts as a new target — which is a fresh fade-in/fade-out per frame and the
@@ -101,15 +127,26 @@ fun TyporbOverlayContent(
             label = "typorb-state",
         ) { current ->
             val content: @Composable (Modifier) -> Unit = when (current) {
-                is OverlayUiState.Idle -> ({ m -> IdlePill(m, shape) })
+                is OverlayUiState.Idle -> ({ m -> IdlePill(m, shape, idleSizeDp) })
                 is OverlayUiState.Recording -> ({ m ->
                     RecordingPill(m, current.amplitudes, shape, showWaveform)
                 })
                 is OverlayUiState.Processing -> ({ m -> ProcessingPill(m, current.stage.label, shape) })
                 is OverlayUiState.Failed -> ({ m -> FailedPill(m, current.message, shape) })
             }
-            Box(modifier = Modifier.padding(contentPadding), contentAlignment = Alignment.Center) {
-                content(Modifier.fillMaxSize())
+            // `wrapContentSize` rather than `fillMaxSize`: the pill is sized by its own content, and
+            // the window is sized to match it. Stretching the pill to the window instead meant the
+            // outgoing and incoming pills were laid out at *each other's* size during a crossfade —
+            // the square orb squashed into a capsule, then the capsule stretched back — which is what
+            // made every state change look like a broken layout rather than a transition.
+            Box(
+                modifier = Modifier
+                    .wrapContentSize()
+                    .padding(contentPadding)
+                    .scale(pressScale),
+                contentAlignment = Alignment.Center,
+            ) {
+                content(Modifier)
             }
         }
     }
@@ -126,6 +163,12 @@ private fun PillSurface(
 ) {
     Box(
         modifier = modifier
+            // Every pill is exactly as wide as its content and exactly one capsule tall. The overlay
+            // window is sized from the same numbers, so the surface and its window agree instead of
+            // the surface being stretched to whatever rectangle the window happens to be mid-morph
+            // through.
+            .height(48.dp)
+            .wrapContentWidth()
             .shadow(elevation = elevation, shape = shape, clip = false)
             .clip(shape)
             .background(TyporbPalette.Surface)
@@ -137,7 +180,7 @@ private fun PillSurface(
 
 /** Idle: a 48dp rounded square of glossy white with a softly pulsing indigo mic. */
 @Composable
-private fun IdlePill(modifier: Modifier, shape: RoundedCornerShape) {
+private fun IdlePill(modifier: Modifier, shape: RoundedCornerShape, idleSizeDp: Int) {
     val transition = rememberInfiniteTransition(label = "idle-pulse")
     val glow by transition.animateFloat(
         initialValue = 0.30f,
@@ -158,7 +201,10 @@ private fun IdlePill(modifier: Modifier, shape: RoundedCornerShape) {
         label = "idle-breathe",
     )
 
-    PillSurface(modifier = modifier, shape = shape) {
+    PillSurface(
+        modifier = modifier.size(idleSizeDp.dp),
+        shape = shape,
+    ) {
         Icon(
             imageVector = Icons.Rounded.Mic,
             contentDescription = "Start dictation",
@@ -181,7 +227,8 @@ private fun RecordingPill(
     PillSurface(modifier = modifier, shape = shape, borderColor = TyporbPalette.Indigo.copy(alpha = 0.30f)) {
         Row(
             modifier = Modifier
-                .fillMaxSize()
+                .height(48.dp)
+                .width(160.dp)
                 .padding(horizontal = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -288,7 +335,9 @@ private fun ProcessingPill(modifier: Modifier, label: String, shape: RoundedCorn
         label = "sweep",
     )
 
-    PillSurface(modifier = modifier, shape = shape) {
+    PillSurface(modifier = modifier.width(190.dp), shape = shape) {
+        // Fills the surface, which now has a definite size of its own (190 x 48dp) rather than
+        // inheriting a window rectangle that was mid-morph.
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -374,7 +423,8 @@ private fun FailedPill(modifier: Modifier, message: String, shape: RoundedCorner
     ) {
         Row(
             modifier = Modifier
-                .fillMaxSize()
+                .height(48.dp)
+                .width(OverlayMetrics.errorWidthDp(message).dp)
                 .padding(horizontal = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -397,3 +447,10 @@ private fun FailedPill(modifier: Modifier, message: String, shape: RoundedCorner
 private const val RESTING_LEVEL = 0.14f
 private const val MIN_LEVEL = 0.08f
 private const val MIN_BAR_FRACTION = 0.18f
+
+/** How far the pill shrinks under the finger. Enough to read as a press, not enough to look broken. */
+private const val PRESSED_SCALE = 0.88f
+
+/** Crossfade timings. The outgoing pill leaves faster than the new one arrives, so the two never sit at half-opacity together. */
+private const val FADE_IN_MS = 180
+private const val FADE_OUT_MS = 110

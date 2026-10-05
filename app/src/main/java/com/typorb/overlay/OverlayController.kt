@@ -192,6 +192,7 @@ class OverlayController(
                         cornerRadiusDp = currentSettings.overlayCornerRadiusDp,
                         showWaveform = currentSettings.waveformEnabled,
                         contentPadding = OverlayMetrics.SHADOW_PADDING_DP.dp,
+                        idleSizeDp = currentSettings.overlaySizeDp,
                     )
                 }
             }
