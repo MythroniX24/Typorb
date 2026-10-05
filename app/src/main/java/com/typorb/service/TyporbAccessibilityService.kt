@@ -515,8 +515,7 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
         )
     }
 
-    private suspend fun onTextReady(text: String) {
-        val settingsAtInjection = container.settingsRepository.current()
+    private suspend fun onTextReady(text: String) {        val settingsAtInjection = container.settingsRepository.current()
         val startedAtMs = System.currentTimeMillis() - lastDictationStartedAtMs
         val result = injector.inject(text)
         // The captured field belongs to one dictation; holding it would have the *next* one append
@@ -545,6 +544,12 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
             TextInjector.Method.COPIED_TO_CLIPBOARD -> {
                 haptics.reject()
                 recordTranscript(text, settingsAtInjection, startedAtMs)
+                OrbDiagnosticsBus.update {
+                    it.copy(
+                        dictationStage = DictationStages.COPIED,
+                        dictationError = null,
+                    )
+                }
                 Log.i(TAG, "No field to insert into; text left on the clipboard")
                 throw TyporbException(
                     message = "Copied — long-press to paste.",
@@ -553,6 +558,16 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
             }
             TextInjector.Method.NONE -> {
                 haptics.reject()
+                // An empty transcript is not an injection failure. Nothing arrived because the
+                // engine returned no words, and telling the user to tap the field sends them off to
+                // fix a field that was never the problem — while the stage line says the take ran.
+                if (result.detail.startsWith(EMPTY_TRANSCRIPT)) {
+                    OrbDiagnosticsBus.update { it.copy(dictationStage = DictationStages.EMPTY) }
+                    throw TyporbException(
+                        message = "Didn't catch that. Try again a little closer to the mic.",
+                        retryable = true,
+                    )
+                }
                 throw TyporbException(
                     message = "Couldn't insert the text. Tap the field and try again.",
                     retryable = true,
@@ -592,6 +607,12 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
 
     private companion object {
         const val TAG = "TyporbService"
+
+        /**
+         * Marks an injection that produced no text at all, so the console can say the *recording*
+         * came back empty rather than the write having failed.
+         */
+        const val EMPTY_TRANSCRIPT = "empty transcript"
 
         /** Focus events arrive in bursts; one evaluation per frame-ish is plenty. */
         const val EVALUATION_THROTTLE_MS = 40L
