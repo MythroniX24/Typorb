@@ -169,16 +169,19 @@ class OverlayController(
                 val currentState by state.collectAsState()
                 val currentSettings by settings.collectAsState()
 
-                // The window is sized outside Compose, so both a settings change *and a state
-                // change* have to drive a re-layout: the Skia content would otherwise render the new
-                // pill clipped to the old window until the service's next evaluation. The third key
-                // is the state's kind, not the state itself — recording publishes a new amplitude
-                // list ~15×/s and every one of those must not restart a resize.
-                androidx.compose.runtime.LaunchedEffect(
-                    currentState::class,
+                // The window is sized outside Compose, so a change in the pill's own rectangle has to
+                // drive a re-layout: the Skia content would otherwise render the new pill clipped to
+                // the old window until the service's next evaluation.
+                //
+                // The key is the *size*, not the state. A state that publishes new data every frame
+                // (recording's amplitude list) must not restart this, and a state whose size depends
+                // on its content — a failure message, which widens the capsule — has to. Both fall out
+                // of comparing the rectangle the state asks for.
+                val pillSize = OverlayMetrics.pillSizeDp(
+                    currentState,
                     currentSettings.overlaySizeDp,
-                    currentSettings.overlayCornerRadiusDp,
-                ) {
+                )
+                androidx.compose.runtime.LaunchedEffect(pillSize) {
                     applyLayout(currentState, animate = true)
                 }
 
