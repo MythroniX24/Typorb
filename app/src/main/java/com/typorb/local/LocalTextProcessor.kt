@@ -25,7 +25,7 @@ class LocalTextProcessor(
         onProgress: ProgressReporter,
     ): Result<String> = try {
         onProgress.onStage(ProcessingStage.TRANSCRIBING)
-        val transcript = whisper.transcribe(request.pcm)
+        val transcript = whisper.transcribe(request.pcm, request.language.promptToken)
         onProgress.onStage(ProcessingStage.FORMATTING)
         val cleaned = LocalTextCleaner.clean(transcript, request.mode)
         if (cleaned.isBlank()) {

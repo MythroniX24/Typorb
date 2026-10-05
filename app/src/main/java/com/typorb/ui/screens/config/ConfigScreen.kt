@@ -268,6 +268,46 @@ private fun DebugConsoleCard(onOpenAccessibility: () -> Unit) {
         DebugRow("Inset probe", if (diagnostics.probeAttached) "attached" else "not attached")
         DebugRow("Last check", lastCheckLabel(diagnostics.lastEvaluationAtMs))
 
+        // The dictation half of the console. The orb rows above answer "did the pill appear"; these
+        // answer "did the words arrive", which is a different pipeline entirely — engine, audio,
+        // transcript, injection — and until now had no reportable evidence at all.
+        Spacer(modifier = Modifier.height(10.dp))
+        Hairline()
+        Spacer(modifier = Modifier.height(10.dp))
+        DebugRow(
+            label = "Last dictation",
+            value = "${diagnostics.dictationStage ?: "—"} · ${diagnostics.dictationEngine ?: "—"}",
+        )
+        DebugRow("Audio captured", "${diagnostics.dictationAudioMs} ms")
+        DebugRow("Transcript size", "${diagnostics.dictationTranscriptChars} chars")
+        DebugRow("Injection", diagnostics.lastInjection?.substringBefore(" · ") ?: "—")
+        diagnostics.lastInjection?.substringAfter(" · ", "")?.takeIf { it.isNotBlank() }?.let { detail ->
+            Spacer(modifier = Modifier.height(3.dp))
+            Text(
+                text = detail,
+                fontSize = 11.sp,
+                color = TyporbPalette.TextMuted,
+            )
+        }
+
+        // Why the last dictation failed, verbatim. "Nothing appeared in the textbox" is the report
+        // this console exists to make unnecessary.
+        diagnostics.dictationError?.let { error ->
+            Spacer(modifier = Modifier.height(10.dp))
+            Text(
+                text = "LAST DICTATION ERROR",
+                fontSize = 10.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = TyporbPalette.Danger,
+            )
+            Spacer(modifier = Modifier.height(3.dp))
+            Text(
+                text = error,
+                fontSize = 11.sp,
+                color = TyporbPalette.TextSecondary,
+            )
+        }
+
         // The reason the window could not be created, shown verbatim. Without this the console can
         // only say "not showing", which is the same information the user already had.
         diagnostics.overlayWindowError?.let { error ->

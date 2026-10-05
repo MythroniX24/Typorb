@@ -44,6 +44,12 @@ private const val PAST_PREFIX = "past_key_values."
  * constantly and a warm model makes the first tap instant) and are reclaimed by the OS on death. They
  * are deliberately *not* torn down when the accessibility service disconnects: that would race with a
  * concurrent [ensureLoaded] on the IO dispatcher and could orphan a native session.
+ *
+ * What *is* re-checked on every dictation is which files the session was built from
+ * ([resolveSource]). A model the user downloads while Typorb is running has to be the model that
+ * actually runs — otherwise a session loaded from the fp32 weights bundled in the APK stays resident
+ * for the rest of the process and the freshly downloaded int8 model is never used, which on a budget
+ * phone is the difference between a two-second dictation and a thirty-second one.
  */
 class WhisperOnnxEngine(
     private val context: Context,
@@ -65,13 +71,24 @@ class WhisperOnnxEngine(
 
     @Volatile private var tokenizer: ByteLevelBpeTokenizer? = null
 
+    /** Which bytes the resident [inference] was built from; see [resolveSource]. */
+    @Volatile private var loadedKey: String? = null
+
     /** Warms the sessions up so the first real dictation is not slowed by model loading. */
     suspend fun warmUp() {
         withContext(Dispatchers.IO) { ensureLoaded() }
     }
 
-    /** @throws TyporbException when the model or tokenizer is missing or corrupt. */
-    suspend fun transcribe(pcm: ByteArray): String = withContext(Dispatchers.Default) {
+    /**
+     * @param languageToken decoder prompt token for the language the speaker is expected to use, e.g.
+     *   `"<|hi|>"`. Anything the checkpoint does not define is skipped by
+     *   [ByteLevelBpeTokenizer.buildPrompt].
+     * @throws TyporbException when the model or tokenizer is missing or corrupt.
+     */
+    suspend fun transcribe(
+        pcm: ByteArray,
+        languageToken: String = ByteLevelBpeTokenizer.SPECIAL_ENGLISH,
+    ): String = withContext(Dispatchers.Default) {
         val active = ensureLoaded()
         val activeTokenizer = tokenizer
             ?: throw TyporbException.localModelUnavailable(IllegalStateException("Tokenizer missing"))
@@ -82,6 +99,7 @@ class WhisperOnnxEngine(
             tokenizer = activeTokenizer,
             features = features,
             maxSteps = SessionTuning.maxDecoderSteps(durationMs),
+            prompt = activeTokenizer.buildPrompt(languageToken),
         )
         activeTokenizer.decode(generated).trim().ifEmpty { throw TyporbException.noAudio() }
     }
@@ -89,17 +107,20 @@ class WhisperOnnxEngine(
     // ----------------------------------------------------------------- loading
 
     private suspend fun ensureLoaded(): Inference {
-        inference?.let { return it }
+        val source = resolveSource()
+        inference?.let { if (source.key == loadedKey) return it }
         return loadLock.withLock {
-            inference?.let { return@withLock it }
+            inference?.let { if (source.key == loadedKey) return@withLock it }
 
-            val tokenizerJson = withContext(Dispatchers.IO) { readSource(Source.TOKENIZER) }.decodeToString()
+            val tokenizerJson = withContext(Dispatchers.IO) {
+                readSource(Source.TOKENIZER, source)
+            }.decodeToString()
             val parsed = runCatching { ByteLevelBpeTokenizer.fromJson(tokenizerJson) }
                 .getOrElse { error -> throw TyporbException.localModelUnavailable(error) }
 
             val loaded = withContext(Dispatchers.IO) {
                 val environment = OrtEnvironment.getEnvironment()
-                val first = environment.createSession(readSource(Source.ENCODER), optionsFor("encoder"))
+                val first = environment.createSession(readSource(Source.ENCODER, source), optionsFor("encoder"))
                 // Static check: a fused graph carries both the mel input and the decoder token input.
                 val isFused = first.inputNames.any { it.contains("feature") } &&
                     DECODER_TOKEN_INPUTS.any { token -> first.inputNames.contains(token) }
@@ -110,13 +131,17 @@ class WhisperOnnxEngine(
                     Inference(
                         encoder = EncoderBinding(first),
                         decoder = DecoderBinding(
-                            environment.createSession(readSource(Source.DECODER), optionsFor("decoder")),
+                            environment.createSession(
+                                readSource(Source.DECODER, source),
+                                optionsFor("decoder"),
+                            ),
                         ),
                     )
                 }
             }
 
             inference = loaded
+            loadedKey = source.key
             tokenizer = parsed
             Log.i(TAG, "Loaded Whisper (vocab=${parsed.vocabularySize}, fused=${loaded.isFused})")
             loaded
@@ -126,14 +151,44 @@ class WhisperOnnxEngine(
     /** One of the three model files, preferring a verified download over the bundled asset. */
     private enum class Source { ENCODER, DECODER, TOKENIZER }
 
-    private suspend fun readSource(source: Source): ByteArray {
+    /**
+     * The files a session would be built from right now, and a key that changes when they change.
+     *
+     * [key] is derived from file lengths rather than contents: it is read once per dictation, and the
+     * sizes of three model files identify a variant well enough to notice a download appearing or a
+     * variant being switched without hashing 40–150 MB on every tap.
+     */
+    private class ModelSource(val key: String, val files: ModelFiles?)
+
+    private suspend fun resolveSource(): ModelSource = withContext(Dispatchers.IO) {
         val downloaded = runCatching { downloadedFiles() }.getOrNull()
-        val file = when (source) {
-            Source.ENCODER -> downloaded?.encoder
-            Source.DECODER -> downloaded?.decoder
-            Source.TOKENIZER -> downloaded?.tokenizer
+        val usable = downloaded?.takeIf { files ->
+            files.encoder.isFile && files.encoder.length() > 0L &&
+                files.decoder.isFile && files.decoder.length() > 0L &&
+                files.tokenizer.isFile && files.tokenizer.length() > 0L
         }
-        if (file != null && file.isFile && file.length() > 0L) {
+        if (usable == null) {
+            return@withContext ModelSource(
+                key = "assets:$modelAssetPath",
+                files = null,
+            )
+        }
+        ModelSource(
+            key = "download:${usable.encoder.length()}:${usable.decoder.length()}:" +
+                "${usable.tokenizer.length()}",
+            files = usable,
+        )
+    }
+
+    private suspend fun readSource(source: Source, model: ModelSource): ByteArray {
+        val file = model.files?.let { files ->
+            when (source) {
+                Source.ENCODER -> files.encoder
+                Source.DECODER -> files.decoder
+                Source.TOKENIZER -> files.tokenizer
+            }
+        }
+        if (file != null) {
             return runCatching { file.readBytes() }
                 .getOrElse { error -> throw TyporbException.localModelUnavailable(error) }
         }
@@ -284,9 +339,10 @@ class WhisperOnnxEngine(
             features: FloatArray,
             encoderHidden: OnnxTensor?,
             maxSteps: Int,
+            prompt: LongArray,
         ): List<Long> {
             val generated = mutableListOf<Long>()
-            var tokens = tokenizer.buildPrompt()
+            var tokens = prompt
             var cache: Map<String, OnnxTensor> = emptyMap()
 
             repeat(maxSteps) {
@@ -427,10 +483,11 @@ class WhisperOnnxEngine(
             tokenizer: ByteLevelBpeTokenizer,
             features: FloatArray,
             maxSteps: Int,
+            prompt: LongArray,
         ): List<Long> {
             val hidden = encoder?.run(features)
             return try {
-                decoder.greedyDecode(tokenizer, features, hidden, maxSteps)
+                decoder.greedyDecode(tokenizer, features, hidden, maxSteps, prompt)
             } finally {
                 hidden?.close()
             }

@@ -13,6 +13,7 @@ import androidx.lifecycle.LifecycleRegistry
 import androidx.lifecycle.lifecycleScope
 import com.typorb.TyporbApp
 import com.typorb.TyporbContainer
+import com.typorb.diagnostics.DictationStages
 import com.typorb.diagnostics.OrbDiagnosticsBus
 import com.typorb.domain.DictationCoordinator
 import com.typorb.domain.TyporbException
@@ -504,13 +505,33 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
         val settingsAtInjection = container.settingsRepository.current()
         val startedAtMs = System.currentTimeMillis() - lastDictationStartedAtMs
         val result = injector.inject(text)
+        // Recorded whatever the outcome: the method names the route that worked (or did not) and the
+        // detail carries which of the focus lookups answered, which is the fact a report needs.
+        OrbDiagnosticsBus.update {
+            it.copy(lastInjection = "${result.method} · ${result.detail}")
+        }
         when (result.method) {
             TextInjector.Method.ACTION_SET_TEXT,
             TextInjector.Method.CLIPBOARD_PASTE,
             -> {
                 haptics.confirm()
                 recordTranscript(text, settingsAtInjection, startedAtMs)
+                OrbDiagnosticsBus.update {
+                    it.copy(dictationStage = DictationStages.INSERTED, dictationError = null)
+                }
                 Log.i(TAG, "Text injected via ${result.method}")
+            }
+            // No field could be reached, but the words are not lost: they are on the clipboard and
+            // the pill says so. A "couldn't insert" that quietly dropped the transcript was the worst
+            // possible answer here.
+            TextInjector.Method.COPIED_TO_CLIPBOARD -> {
+                haptics.reject()
+                recordTranscript(text, settingsAtInjection, startedAtMs)
+                Log.i(TAG, "No field to insert into; text left on the clipboard")
+                throw TyporbException(
+                    message = "Copied — long-press to paste.",
+                    retryable = false,
+                )
             }
             TextInjector.Method.NONE -> {
                 haptics.reject()
@@ -520,7 +541,12 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
                 )
             }
         }
-        hideOverlay()
+
+        // The orb belongs to the keyboard, not to one dictation. Hiding it here — which is what this
+        // used to do — meant every successful dictation blinked the orb away and the watchdog brought
+        // it back up to 600 ms later, right in front of a user who was still typing. Re-evaluating
+        // keeps it in place while the keyboard is up and still takes it down when it is not.
+        applyOverlayState()
     }
 
     private fun hideOverlay() {

@@ -23,11 +23,15 @@ class ByteLevelBpeTokenizer private constructor(
      * Multilingual checkpoints take `<|startoftranscript|><|en|><|transcribe|><|notimestamps|>`;
      * English-only checkpoints have no `<|en|>`/`<|transcribe|>` tokens, so those are included only
      * when the vocabulary actually defines them.
+     *
+     * @param languageToken token for the language the speaker is expected to use, e.g. `"<|hi|>"`.
+     *   Any token the vocabulary does not define is skipped rather than substituted, so a checkpoint
+     *   that lacks the language still decodes.
      */
-    fun buildPrompt(): LongArray {
+    fun buildPrompt(languageToken: String = SPECIAL_ENGLISH): LongArray {
         val start = idByToken[SPECIAL_START_OF_TRANSCRIPT] ?: idByToken[SPECIAL_END_OF_TEXT] ?: 0L
         val prompt = mutableListOf(start)
-        idByToken[SPECIAL_ENGLISH]?.let(prompt::add)
+        idByToken[languageToken]?.let(prompt::add)
         idByToken[SPECIAL_TRANSCRIBE]?.let(prompt::add)
         prompt += idByToken[SPECIAL_NO_TIMESTAMPS] ?: start
         return prompt.toLongArray()

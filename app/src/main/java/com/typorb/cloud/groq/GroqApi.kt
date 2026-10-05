@@ -19,6 +19,10 @@ import retrofit2.http.Part
  */
 interface GroqApi {
 
+    /**
+     * @param language ISO-639-1 code, or `null` to let Whisper detect the language itself. Retrofit
+     *   omits a null part entirely, which is exactly how "auto" is expressed in the API.
+     */
     @Multipart
     @POST("openai/v1/audio/transcriptions")
     suspend fun transcribe(
@@ -26,7 +30,7 @@ interface GroqApi {
         @Part file: MultipartBody.Part,
         @Part("model") model: RequestBody,
         @Part("response_format") responseFormat: RequestBody,
-        @Part("language") language: RequestBody,
+        @Part("language") language: RequestBody?,
         @Part("temperature") temperature: RequestBody,
     ): TranscriptionResponse
 

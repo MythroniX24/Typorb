@@ -3,6 +3,7 @@ package com.typorb.service
 import android.accessibilityservice.AccessibilityService
 import android.graphics.Rect
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 
 /**
  * Answers the two questions the rest of Typorb asks about the screen: *is this node an editable text
@@ -41,6 +42,7 @@ object EditableFieldInspector {
         SYSTEM("system findFocus"),
         ACTIVE_WINDOW("active-window findFocus"),
         WINDOW_WALK("window walk"),
+        WINDOW_SCAN("window scan"),
         NONE("none"),
     }
 
@@ -109,22 +111,70 @@ object EditableFieldInspector {
      *     recreated its field.
      *  3. a depth-first walk of the active window for any editable node — the last resort for fields
      *     that never take accessibility input focus at all.
+     *  4. the same focused-node question asked of every *other* visible window
+     *     ([Source.WINDOW_SCAN]).
+     *
+     * Every route rejects nodes that live in the keyboard's own windows. A soft keyboard is a window
+     * like any other and some of them (Gboard's emoji search, MIUI's clipboard tray) put an editable
+     * field of their own on screen — one that can legitimately hold input focus. Without this filter a
+     * dictation can be typed into the keyboard instead of the app, which looks exactly like "my text
+     * never appeared".
      *
      * A `null` result is a legitimate answer rather than an error: it means nothing editable is being
      * edited at that instant.
      */
     fun probe(service: AccessibilityService, activeRoot: AccessibilityNodeInfo?): Focus {
+        val keyboardWindows = keyboardWindowIds(service)
+
         runCatching { service.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) }
             .getOrNull()
-            ?.takeIf { isEditable(it) }
+            ?.takeIf { isEditable(it) && it.windowId !in keyboardWindows }
             ?.let { return Focus(it, Source.SYSTEM) }
 
-        focusedEditableUnder(activeRoot)?.let { return Focus(it, Source.ACTIVE_WINDOW) }
+        focusedEditableUnder(activeRoot)
+            ?.takeIf { it.windowId !in keyboardWindows }
+            ?.let { return Focus(it, Source.ACTIVE_WINDOW) }
 
-        activeRoot?.let { root ->
-            findFirstEditable(root, MAX_SEARCH_DEPTH)?.let { return Focus(it, Source.WINDOW_WALK) }
-        }
+        activeRoot
+            ?.takeIf { it.windowId !in keyboardWindows }
+            ?.let { root ->
+                findFirstEditable(root, MAX_SEARCH_DEPTH)?.let { return Focus(it, Source.WINDOW_WALK) }
+            }
+
+        focusedEditableInOtherWindows(service, keyboardWindows)?.let { return Focus(it, Source.WINDOW_SCAN) }
         return Focus(null, Source.NONE)
+    }
+
+    /** Ids of the windows that belong to a soft keyboard, so their fields are never chosen. */
+    private fun keyboardWindowIds(service: AccessibilityService): Set<Int> =
+        runCatching { service.windows }
+            .getOrNull()
+            .orEmpty()
+            .filter { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD }
+            .map { it.id }
+            .toSet()
+
+    /**
+     * Asks each non-keyboard window where *its* input focus is.
+     *
+     * Only the focused node counts on this route — no blind walk. A window that is not on top can
+     * still be listed, and walking one would hand back a field the user is not even looking at; the
+     * system's input focus is the one piece of evidence that cannot be a guess.
+     */
+    private fun focusedEditableInOtherWindows(
+        service: AccessibilityService,
+        keyboardWindows: Set<Int>,
+    ): AccessibilityNodeInfo? {
+        val windows = runCatching { service.windows }.getOrNull().orEmpty()
+        for (window in windows) {
+            if (window.id in keyboardWindows || window.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD) {
+                continue
+            }
+            val root = runCatching { window.root }.getOrNull() ?: continue
+            val focused = runCatching { root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) }.getOrNull()
+            if (focused != null && isEditable(focused)) return focused
+        }
+        return null
     }
 
     /** Whatever the focused node is, as long as it is editable — or `null`. */

@@ -82,6 +82,24 @@ data class OrbDiagnostics(
     val overlayWindowType: String? = null,
     /** Whether "Display over other apps" is granted, i.e. the fallback type is available. */
     val overlayPermissionGranted: Boolean = false,
+    /**
+     * Which engine the last dictation ran on.
+     *
+     * The whole point of writing it down: "Local does not work" and "the switch did not happen"
+     * produce the same experience and completely different fixes, and only the engine the pipeline
+     * actually used can tell them apart.
+     */
+    val dictationEngine: String? = null,
+    /** How far the last dictation got, as a [DictationStages] value. */
+    val dictationStage: String? = null,
+    /** Why the last dictation failed, verbatim, or `null` when it did not. */
+    val dictationError: String? = null,
+    /** Audio captured for the last dictation, in ms. `0` means nothing was recorded at all. */
+    val dictationAudioMs: Long = 0L,
+    /** Characters the last dictation produced, i.e. the size of the transcript before injection. */
+    val dictationTranscriptChars: Int = 0,
+    /** What the injector did with the last transcript, e.g. `ACTION_SET_TEXT · set text via ...`. */
+    val lastInjection: String? = null,
     val lastEvaluationAtMs: Long = 0L,
     /** Total accessibility events delivered, to distinguish "silent" from "no events". */
     val eventCount: Long = 0,
@@ -94,6 +112,10 @@ data class OrbDiagnostics(
     fun headline(): String = OrbDiagnosis.headline(this)
 
     fun detail(): String = OrbDiagnosis.detail(this)
+
+    /** `true` when the last dictation reached a state the user should hear about. */
+    val lastDictationFailed: Boolean
+        get() = dictationStage == DictationStages.FAILED
 
     /** Plain-text dump for the clipboard, so a user can paste the state back into a bug report. */
     fun asReport(nowMs: Long): String = buildString {
@@ -122,6 +144,12 @@ data class OrbDiagnostics(
         appendLine("orb window live   : $overlayAttached")
         appendLine("orb pinned        : $orbPinned")
         appendLine("watchdog          : $watchdogTicks checks, $watchdogKeyboardTicks with a keyboard")
+        appendLine()
+        appendLine("last dictation    : ${dictationStage ?: "none"} · ${dictationEngine ?: "—"}")
+        appendLine("audio captured    : ${dictationAudioMs}ms")
+        appendLine("transcript chars  : $dictationTranscriptChars")
+        appendLine("injection         : ${lastInjection ?: "—"}")
+        dictationError?.let { appendLine("dictation error   : $it") }
         val age = if (lastEvaluationAtMs == 0L) {
             "never"
         } else {
@@ -134,6 +162,37 @@ data class OrbDiagnostics(
             breadcrumbs.forEach { appendLine("  $it") }
         }
     }
+}
+
+/**
+ * Stage names for [OrbDiagnostics.dictationStage].
+ *
+ * Shared constants rather than prose, because three different classes write them (the coordinator,
+ * the accessibility service and the engines' progress reporter) and a report is only readable when
+ * they agree.
+ */
+object DictationStages {
+
+    /** Microphone open. */
+    const val RECORDING = "recording"
+
+    /** Audio captured, engine running. */
+    const val TRANSCRIBING = "transcribing"
+
+    /** Transcript ready, formatting pass running. */
+    const val FORMATTING = "formatting"
+
+    /** Text ready, injector running. */
+    const val INSERTING = "inserting"
+
+    /** Delivered into the field. */
+    const val INSERTED = "inserted"
+
+    /** Not delivered, but left on the clipboard for a manual paste. */
+    const val COPIED = "copied to clipboard"
+
+    /** Ended in an error; [OrbDiagnostics.dictationError] carries the reason. */
+    const val FAILED = "failed"
 }
 
 /**

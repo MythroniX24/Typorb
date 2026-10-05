@@ -69,7 +69,9 @@ class CloudTextProcessor(
                 file = filePart,
                 model = transcribeModel.asFormPart(),
                 responseFormat = "json".asFormPart(),
-                language = DEFAULT_LANGUAGE.asFormPart(),
+                // `null` = Whisper detects the language itself. Forcing English here is what used to
+                // turn Hinglish into stray transliteration or a quiet translation.
+                language = request.language.requestCode?.asFormPart(),
                 temperature = TEMPERATURE.asFormPart(),
             ).text
         }
@@ -121,10 +123,10 @@ class CloudTextProcessor(
         private const val MAX_ATTEMPTS = 3
         private const val SYSTEM_ROLE = "system"
         private const val USER_ROLE = "user"
-        private const val DEFAULT_LANGUAGE = "en"
         private const val TEMPERATURE = "0"
 
         private val AUDIO_WAV = "audio/wav".toMediaType()
+
         private val TEXT_PLAIN = "text/plain".toMediaType()
 
         private val FILLER_WORDS = listOf("umm", "uh", "er", "ah", "aah", "hmm", "erm", "uhh um")

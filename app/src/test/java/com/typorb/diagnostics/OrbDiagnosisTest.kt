@@ -4,6 +4,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+
+
 /**
  * The debug console is only useful if its verdict is right, so the wording is asserted rather than
  * eyeballed. Each case pins one link in the "why is the orb not showing" chain.
@@ -235,6 +237,48 @@ class OrbDiagnosisTest {
         assertTrue(report.contains("watchdog          : 300 checks, 42 with a keyboard"))
         assertTrue(report.contains("orb pinned        : true"))
         assertTrue(report.contains("orb window live   : true"))
+    }
+
+    @Test
+    fun `the report carries the last dictation and why it failed`() {
+        // "Nothing appeared in the textbox" is the report this exists to replace: the engine that ran,
+        // how much audio it got, how big the transcript was, and what injection did are the four facts
+        // that separate an engine failure from an injection failure from a silent microphone.
+        val d = OrbDiagnostics(
+            serviceConnected = true,
+            dictationEngine = "LOCAL",
+            dictationStage = DictationStages.FAILED,
+            dictationError = "Offline model unavailable.",
+            dictationAudioMs = 2_400L,
+            dictationTranscriptChars = 0,
+            lastInjection = "NONE · no editable field found",
+        )
+        val report = d.asReport(nowMs = 1_000L)
+
+        assertTrue(report.contains("last dictation    : failed · LOCAL"))
+        assertTrue(report.contains("audio captured    : 2400ms"))
+        assertTrue(report.contains("transcript chars  : 0"))
+        assertTrue(report.contains("injection         : NONE · no editable field found"))
+        assertTrue(report.contains("dictation error   : Offline model unavailable."))
+        assertTrue(d.lastDictationFailed)
+    }
+
+    @Test
+    fun `a dictation that landed is reported as inserted with no error`() {
+        val d = OrbDiagnostics(
+            serviceConnected = true,
+            dictationEngine = "CLOUD",
+            dictationStage = DictationStages.INSERTED,
+            dictationAudioMs = 4_100L,
+            dictationTranscriptChars = 42,
+            lastInjection = "ACTION_SET_TEXT · set text via system findFocus",
+        )
+        val report = d.asReport(nowMs = 1_000L)
+
+        assertTrue(report.contains("last dictation    : inserted · CLOUD"))
+        assertTrue(report.contains("transcript chars  : 42"))
+        assertTrue(!report.contains("dictation error"))
+        assertTrue(!d.lastDictationFailed)
     }
 
     @Test

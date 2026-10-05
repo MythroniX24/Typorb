@@ -12,6 +12,7 @@ import com.typorb.data.Transcript
 import com.typorb.data.TyporbSettings
 import com.typorb.model.ContextMode
 import com.typorb.model.ProcessingEngine
+import com.typorb.model.TranscriptionLanguage
 import com.typorb.util.Permissions
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -158,6 +159,8 @@ class TyporbViewModel(application: Application) : AndroidViewModel(application) 
     fun setEngine(engine: ProcessingEngine) = settingsRepository.setEngine(engine)
 
     fun setContextMode(mode: ContextMode) = settingsRepository.setContextMode(mode)
+
+    fun setLanguage(language: TranscriptionLanguage) = settingsRepository.setLanguage(language)
 
     fun setGpuAcceleration(enabled: Boolean) = settingsRepository.setGpuAcceleration(enabled)
 

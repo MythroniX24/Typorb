@@ -92,6 +92,12 @@ fun TyporbOverlayContent(
         AnimatedContent(
             targetState = state,
             transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(110)) },
+            // Keyed on the state's *kind*, never on the state itself. Recording publishes a new
+            // amplitude list roughly fifteen times a second, and with the default key every one of
+            // those counts as a new target — which is a fresh fade-in/fade-out per frame and the
+            // capsule visibly strobing instead of animating. The same reasoning keeps a repeated
+            // failure message from re-crossfading.
+            contentKey = { it::class },
             label = "typorb-state",
         ) { current ->
             val content: @Composable (Modifier) -> Unit = when (current) {

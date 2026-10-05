@@ -3,6 +3,8 @@ package com.typorb.domain
 import android.util.Log
 import com.typorb.audio.AudioRecorder
 import com.typorb.data.SettingsRepository
+import com.typorb.diagnostics.DictationStages
+import com.typorb.diagnostics.OrbDiagnosticsBus
 import com.typorb.model.OverlayUiState
 import com.typorb.model.ProcessingStage
 import kotlinx.coroutines.CancellationException
@@ -71,14 +73,24 @@ class DictationCoordinator(
         processingJob?.cancel()
         amplitudeWindow.clear()
 
+        // Written before the microphone is opened so a permission failure is still attributed to an
+        // engine and a stage in the report rather than to nothing at all.
+        OrbDiagnosticsBus.update {
+            it.copy(
+                dictationEngine = settings.current().engine.name,
+                dictationStage = DictationStages.RECORDING,
+                dictationError = null,
+                dictationAudioMs = 0L,
+                dictationTranscriptChars = 0,
+                lastInjection = null,
+            )
+        }
+
         try {
             recorder.start(scope)
         } catch (error: Throwable) {
             Log.w(TAG, "Could not start recording", error)
-            _state.value = OverlayUiState.Failed(
-                (error as? TyporbException)?.message ?: "Microphone unavailable.",
-            )
-            scheduleDismiss()
+            failWith((error as? TyporbException)?.message ?: "Microphone unavailable.")
             return
         }
 
@@ -111,14 +123,32 @@ class DictationCoordinator(
                 failWith((error as? TyporbException)?.message ?: "Didn't catch that.")
                 return@launch
             }
+            // How much was actually captured. "Didn't catch that" with 12 s of audio and with 0 ms
+            // of audio are different bugs, and only this number separates them.
+            OrbDiagnosticsBus.update {
+                it.copy(
+                    dictationStage = DictationStages.TRANSCRIBING,
+                    dictationAudioMs = durationMsOf(audio),
+                )
+            }
 
             val snapshot = settings.current()
             val engine = engineProvider(snapshot)
+            // The engine *instance* that ran, not the setting that was read: this is what proves a
+            // switch in the dashboard reached the dictation pipeline.
+            OrbDiagnosticsBus.update { it.copy(dictationEngine = engine.engine.name) }
 
             val result = try {
                 engine.process(
-                    DictationRequest(pcm = audio, mode = snapshot.contextMode),
-                ) { stage -> _state.value = OverlayUiState.Processing(stage) }
+                    DictationRequest(
+                        pcm = audio,
+                        mode = snapshot.contextMode,
+                        language = snapshot.language,
+                    ),
+                ) { stage ->
+                    _state.value = OverlayUiState.Processing(stage)
+                    OrbDiagnosticsBus.update { it.copy(dictationStage = stageName(stage)) }
+                }
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (error: Throwable) {
@@ -128,6 +158,12 @@ class DictationCoordinator(
             result
                 .onSuccess { text ->
                     _state.value = OverlayUiState.Processing(ProcessingStage.UPDATING)
+                    OrbDiagnosticsBus.update {
+                        it.copy(
+                            dictationStage = DictationStages.INSERTING,
+                            dictationTranscriptChars = text.trim().length,
+                        )
+                    }
                     try {
                         onTextReady(text)
                         _state.value = OverlayUiState.Idle
@@ -135,7 +171,12 @@ class DictationCoordinator(
                         throw cancellation
                     } catch (error: Throwable) {
                         Log.w(TAG, "Text injection failed", error)
-                        failWith("Couldn't type that. Try the field again.")
+                        // The injection layer knows more than this class does — "text copied, paste it"
+                        // and "no field was found" are both far more useful than one generic line.
+                        failWith(
+                            (error as? TyporbException)?.message
+                                ?: "Couldn't type that. Tap the field and try again.",
+                        )
                     }
                 }
                 .onFailure { error ->
@@ -147,7 +188,23 @@ class DictationCoordinator(
 
     private fun failWith(message: String) {
         _state.value = OverlayUiState.Failed(message)
+        OrbDiagnosticsBus.update {
+            it.copy(
+                dictationStage = DictationStages.FAILED,
+                dictationError = message,
+            )
+        }
         scheduleDismiss()
+    }
+
+    /** Whisper's native rate; the recorder captures nothing else. */
+    private fun durationMsOf(pcm: ByteArray): Long =
+        (pcm.size / AudioRecorder.BYTES_PER_SAMPLE).toLong() * 1_000L / AudioRecorder.SAMPLE_RATE
+
+    private fun stageName(stage: ProcessingStage): String = when (stage) {
+        ProcessingStage.TRANSCRIBING -> DictationStages.TRANSCRIBING
+        ProcessingStage.FORMATTING -> DictationStages.FORMATTING
+        ProcessingStage.UPDATING -> DictationStages.INSERTING
     }
 
     private fun scheduleDismiss() {

@@ -25,6 +25,7 @@ completely offline.
 │                                       → Kotlin regex cleanup             │
 │        ▼                                                                 │
 │ TextInjector: ACTION_SET_TEXT → (fallback) clipboard + ACTION_PASTE       │
+│   · no field, or both refused → text is left on the clipboard to paste    │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -70,16 +71,37 @@ and the orb is added again.
 | Idle | 48dp rounded square (14dp radius), frosted glass, softly pulsing mic | Tap → start recording, `EFFECT_TICK` |
 | Recording | 160dp capsule, 5 canvas bars driven by live RMS decibels | Tap → stop, waveform freezes, morph to processing |
 | Processing | Rotating `Brush.sweepGradient` border, cascading ellipsis, stage label | `ACTION_SET_TEXT` (or clipboard paste), `EFFECT_CLICK` |
-| Failed | Red capsule with the reason | Auto-collapses after 2.6s |
+| Failed | Red capsule, widened to fit the reason | Auto-collapses after 2.6s |
+
+**The orb *is* the window, so tapping it is a resize.** The window is exactly the pill's rectangle plus
+14dp of shadow padding, which means every state change has to move a real
+`WindowManager.LayoutParams` — and that is animated: width, height, x and y are lerped over 190 ms, so a
+tap opens the square into the recording capsule instead of swapping rectangles. Two rules keep it from
+stuttering: the Compose content crossfade is keyed on the state's *kind* (recording publishes a new
+amplitude list ~15×/s, and a state-keyed animation would re-trigger a fade per frame), and the layout
+is only re-applied when its destination actually changed, so the service's constant re-evaluation
+cannot restart a morph that is still in flight. A successful dictation also no longer hides the orb:
+it stays put while the keyboard is up and is taken down by the next evaluation once it is not, which
+removes the blink-away-and-back that used to follow every insert.
 
 ### 3. Text injection
 
-1. Locate the focused editable node (retried a few times — an IME swap briefly clears focus).
+1. Locate the focused editable node, retried for ~0.7 s — an IME swap briefly clears focus, and the
+   only cost of waiting is that the pill says "Inserting text…" a little longer. Four lookups are
+   tried: `findFocus(FOCUS_INPUT)` across every window, the same question asked inside the active
+   window, a tree walk of that window, and finally the same question asked of every *other* visible
+   window. Every route rejects nodes that live in the keyboard's own windows, so a dictation can never
+   be typed into an IME's search box instead of the app — which looks exactly like "my text never
+   appeared".
 2. `performAction(ACTION_SET_TEXT, Bundle(ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE))`. Fast, and the
    user's clipboard is never touched.
 3. If that returns `false` (WebViews, hardened apps, some Compose fields): save the clipboard, copy
    the text in, `ACTION_PASTE`, then **restore the original clipboard** (or clear it if Android
    refused to share it, which it does from Android 10 for background apps).
+4. **If there is no field, or both actions are refused, the dictated text is left on the clipboard**
+   and the pill says `Copied — long-press to paste.` The words are the whole point of the feature, so
+   a failure to deliver them to a field is not a reason to make them disappear; a bare "couldn't
+   insert" left the user with nothing at all to show for the dictation.
 
 ---
 
@@ -130,6 +152,10 @@ app/src/main/java/com/typorb/
 | Transcription | `POST /openai/v1/audio/transcriptions`, multipart WAV, `whisper-large-v3` |
 | Formatting | `POST /openai/v1/chat/completions`, `llama-3.1-8b-instant` |
 
+The `language` field is **omitted by default**, which asks Whisper to detect the language of each
+recording — the setting that handles Hinglish, where one sentence mixes Hindi and English. Control →
+*Spoken language* can force `en` or `hi` when detection guesses wrong.
+
 The system prompt removes fillers (`umm`, `uh`, `aah`, …), fixes punctuation and reshapes the text
 into the selected mode — Quick Chat, Code/Bug Report (markdown), Bullet Notes or Formal Email. Both
 calls retry up to 3 times with exponential backoff **only** for rate limits, 5xx and network errors;
@@ -153,8 +179,12 @@ corrupt transfers can therefore never be loaded as a model; a failed download cl
 and stays retryable. Files in `assets/whisper/` are used as a fallback when nothing is downloaded
 (`sh tools/fetch-whisper-model.sh`).
 
-The engine loads whichever is present, prefers the download, and auto-detects the graph shape. The
-front-end is implemented here: PCM → 400-sample Hann window, zero-padded to a 512-point radix-2 FFT,
+Which files to load is re-resolved on **every dictation**, so a model downloaded while Typorb is
+running is picked up by the next take — an asset-backed fp32 session can no longer stay resident for
+the life of the process and quietly ignore the 40 MB int8 model the user just fetched. The engine
+auto-detects the graph shape, and its decoder prompt starts from the Spoken language setting's token
+(`<|en|>` or `<|hi|>`) because a quantised tiny checkpoint has no reliable language-detection pass of
+its own. The front-end is implemented here: PCM → 400-sample Hann window, zero-padded to a 512-point radix-2 FFT,
 160-sample hop, reflect-padded centre → 80-bin **area-normalised** Slaney mel filterbank → `log10`
 with a `max − 8` floor → `(x + 4) / 4` normalisation, zero-padded to the 30 s window. Decoding is
 greedy with the KV cache the export provides (re-running the full prefix when it doesn't), and token
@@ -188,7 +218,7 @@ tensor contract.
 
 ```bash
 ./gradlew assembleDebug           # app/build/outputs/apk/debug/app-debug.apk
-./gradlew testDebugUnitTest       # 118 unit tests (see below)
+./gradlew testDebugUnitTest       # 131 unit tests (see below)
 sh tools/fetch-whisper-model.sh   # optional: bake the weights in for offline dev
 ```
 
@@ -196,9 +226,10 @@ Unit tests cover the pieces that can be proved without a device: what counts as 
 when the orb is allowed to exist (the two rules its appearance turns on), pill geometry, transcript
 cleanup, the FFT/mel front-end
 (frame counts, filterbank weighting, tone placement), the byte-level BPE decoder, the model-download
-integrity gate (SHA-256 accepts the real digest and rejects truncated files) and the device-tuning
-heuristics. A smoke test also runs against the real vocabulary whenever
-the model assets are present, and skips otherwise.
+integrity gate (SHA-256 accepts the real digest and rejects truncated files), the overlay window's
+per-state rectangles and morph interpolation, the language tokens both engines share, the dictation
+rows the debug console reports, and the device-tuning heuristics. A smoke test also runs against the
+real vocabulary whenever the model assets are present, and skips otherwise.
 
 Requires JDK 17. `compileSdk 34`, `minSdk 26`, `targetSdk 34`, AGP 8.5.2, Kotlin 1.9.24, Compose BOM
 2024.06.
@@ -272,6 +303,24 @@ The Settings → Debug console answers this from the device itself — read the 
 | Verdict "Keyboard not detected" | Signal is not reaching the service | Check `IME probe window`; grant "Display over other apps" and restart the phone |
 | Verdict "Overlay window not added" | WindowManager refused the orb | The verbatim error is printed below the rows; grant "Display over other apps" so both window types can be tried |
 | Watchdog stops climbing | Service killed in background | Settings → Apps → Typorb → Battery → **No restrictions**, and enable **Autostart** |
+
+## When no text appears in the field
+
+The debug console has a second half for this — `Last dictation`, `Audio captured`, `Transcript size`
+and `Injection` — because the orb appearing and the words arriving are different pipelines. Read the
+stage first: it names exactly how far the take got.
+
+| Console row | Meaning | Fix |
+| --- | --- | --- |
+| `Last dictation: recording` | Still recording — a take ends on the **second** tap | Tap the orb again |
+| `Audio captured: 0 ms` | Microphone produced nothing | Grant microphone permission; check MIUI's Privacy → Microphone log |
+| `Last dictation: failed · CLOUD` + `dictation error` | Groq refused or was unreachable | The error is printed verbatim; a 401 means the key, not the network |
+| `Last dictation: failed · LOCAL` | Offline model missing or too slow | Download the int8 model (Settings → *Offline model*); the bundled fp32 weights are many times slower on an A53 |
+| `Injection: COPIED_TO_CLIPBOARD` | No editable field could be reached | The text is on the clipboard — long-press the field and paste |
+| `Injection: NONE` | Field refused both routes | Check `Text field focused` / `Focus lookup`; the field may be a canvas or a game |
+
+**Copy report** copies all of it, including the verbatim error, so a bug report carries the evidence
+rather than a description of the symptom.
 
 MIUI/HyperOS specifics on the Redmi 8A class of devices:
 

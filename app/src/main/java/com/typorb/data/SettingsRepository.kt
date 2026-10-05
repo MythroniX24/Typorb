@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.typorb.model.ContextMode
 import com.typorb.model.ProcessingEngine
+import com.typorb.model.TranscriptionLanguage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -12,6 +13,14 @@ import kotlinx.coroutines.flow.asStateFlow
 data class TyporbSettings(
     val engine: ProcessingEngine = ProcessingEngine.CLOUD,
     val contextMode: ContextMode = ContextMode.QUICK_CHAT,
+    /**
+     * Language the engines are told to expect.
+     *
+     * Defaults to [TranscriptionLanguage.AUTO] because Typorb's dictation is overwhelmingly Hinglish:
+     * a forced `en` is what makes Whisper mangle Hindi words, and letting the model detect the
+     * language per recording is the only setting that handles a mixed sentence honestly.
+     */
+    val language: TranscriptionLanguage = TranscriptionLanguage.AUTO,
     val apiKey: String = "",
     /** Which downloaded Whisper build the offline engine should load. */
     val modelVariantId: String = "int8",
@@ -87,6 +96,10 @@ class SettingsRepository(context: Context) {
         plainPrefs.edit().putString(KEY_CONTEXT_MODE, mode.name).apply()
     }
 
+    fun setLanguage(language: TranscriptionLanguage) {
+        plainPrefs.edit().putString(KEY_LANGUAGE, language.name).apply()
+    }
+
     fun setModelVariant(variantId: String) {
         plainPrefs.edit().putString(KEY_MODEL_VARIANT, variantId).apply()
     }
@@ -142,9 +155,13 @@ class SettingsRepository(context: Context) {
         val mode = plainPrefs.getString(KEY_CONTEXT_MODE, null)
             ?.let { name -> runCatching { ContextMode.valueOf(name) }.getOrNull() }
             ?: ContextMode.QUICK_CHAT
+        val language = plainPrefs.getString(KEY_LANGUAGE, null)
+            ?.let { name -> runCatching { TranscriptionLanguage.valueOf(name) }.getOrNull() }
+            ?: TranscriptionLanguage.AUTO
         return TyporbSettings(
             engine = engine,
             contextMode = mode,
+            language = language,
             apiKey = securePrefs.getString(KEY_API_KEY, "").orEmpty(),
             modelVariantId = plainPrefs.getString(KEY_MODEL_VARIANT, null) ?: "int8",
             useGpuAcceleration = plainPrefs.getBoolean(KEY_GPU, false),
@@ -167,6 +184,7 @@ class SettingsRepository(context: Context) {
         const val SECURE_PREFS_NAME = "typorb_secure_prefs"
         const val KEY_ENGINE = "processing_engine"
         const val KEY_CONTEXT_MODE = "context_mode"
+        const val KEY_LANGUAGE = "transcription_language"
         const val KEY_API_KEY = "groq_api_key"
         const val KEY_MODEL_VARIANT = "model_variant"
         const val KEY_GPU = "gpu_acceleration"

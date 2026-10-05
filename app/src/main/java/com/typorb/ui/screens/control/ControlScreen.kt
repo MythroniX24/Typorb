@@ -51,9 +51,11 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.typorb.data.OfflineModelState
 import com.typorb.data.TyporbSettings
 import com.typorb.model.ContextMode
 import com.typorb.model.ProcessingEngine
+import com.typorb.model.TranscriptionLanguage
 import com.typorb.ui.rememberBottomBarClearance
 import com.typorb.ui.PermissionStatus
 import com.typorb.ui.TyporbViewModel
@@ -80,6 +82,7 @@ fun ControlScreen(
     onOpenSettings: () -> Unit,
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val modelState by viewModel.modelState.collectAsStateWithLifecycle()
     val bottomClearance = rememberBottomBarClearance()
 
     // LazyColumn instead of Column + verticalScroll so only the visible cards are composed.
@@ -99,6 +102,7 @@ fun ControlScreen(
         item(key = "control-engine") {
             EngineHeroCard(
                 settings = settings,
+                modelState = modelState,
                 onSelect = viewModel::setEngine,
                 modifier = Modifier
                     .padding(horizontal = 18.dp)
@@ -114,6 +118,16 @@ fun ControlScreen(
             ) {
                 SectionLabel("Typing context")
                 ModeChips(selected = settings.contextMode, onSelect = viewModel::setContextMode)
+
+                Spacer(modifier = Modifier.height(16.dp))
+                SectionLabel("Spoken language")
+                LanguageChips(selected = settings.language, onSelect = viewModel::setLanguage)
+                Spacer(modifier = Modifier.height(7.dp))
+                Text(
+                    text = settings.language.description,
+                    fontSize = 11.sp,
+                    color = TyporbPalette.TextMuted,
+                )
             }
         }
 
@@ -167,6 +181,7 @@ private fun ControlTopBar(
 @Composable
 private fun EngineHeroCard(
     settings: TyporbSettings,
+    modelState: OfflineModelState,
     onSelect: (ProcessingEngine) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -229,6 +244,81 @@ private fun EngineHeroCard(
                 fontSize = 12.sp,
                 color = TyporbPalette.Warning,
             )
+        }
+
+        // Local mode works out of the box — the APK carries the full-precision weights — but on a
+        // Snapdragon-439 phone that model is many times slower than the int8 build the Settings screen
+        // offers, and a dictation that takes half a minute reads as a broken feature, not a slow one.
+        if (settings.engine == ProcessingEngine.LOCAL && modelState !is OfflineModelState.Ready) {
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = "Offline mode is on the model bundled in the APK, which is slow on a budget " +
+                    "phone. Download the int8 model in Settings for usable speed.",
+                fontSize = 12.sp,
+                color = TyporbPalette.Warning,
+            )
+        }
+    }
+}
+
+/**
+ * Spoken-language chips.
+ *
+ * Deliberately next to the context chips rather than buried in Settings: it is the one choice that
+ * decides whether Hindi words in a Hinglish sentence come out written down or mangled, and it is the
+ * answer to the most common "the transcription is wrong" report.
+ */
+@Composable
+private fun LanguageChips(
+    selected: TranscriptionLanguage,
+    onSelect: (TranscriptionLanguage) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(9.dp),
+    ) {
+        TranscriptionLanguage.entries.forEach { language ->
+            val isSelected = language == selected
+            val interactionSource = remember { MutableInteractionSource() }
+
+            val container by animateColorAsState(
+                targetValue = if (isSelected) TyporbPalette.Cobalt else TyporbPalette.Surface,
+                animationSpec = tween(200),
+                label = "language-container",
+            )
+            val outline by animateColorAsState(
+                targetValue = if (isSelected) TyporbPalette.Cobalt else TyporbPalette.Border,
+                animationSpec = tween(200),
+                label = "language-outline",
+            )
+            val content by animateColorAsState(
+                targetValue = if (isSelected) TyporbPalette.OnAccent else TyporbPalette.TextSecondary,
+                animationSpec = tween(200),
+                label = "language-content",
+            )
+
+            Row(
+                modifier = Modifier
+                    .pressScale(interactionSource, pressedScale = 0.95f)
+                    .clip(TyporbShapes.Capsule)
+                    .background(container)
+                    .border(BorderStroke(1.dp, outline), TyporbShapes.Capsule)
+                    .clickable(
+                        interactionSource = interactionSource,
+                        indication = null,
+                    ) { onSelect(language) }
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = language.label,
+                    fontSize = 12.sp,
+                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                    color = content,
+                )
+            }
         }
     }
 }

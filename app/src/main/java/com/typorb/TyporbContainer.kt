@@ -15,6 +15,9 @@ import com.typorb.local.WhisperOnnxEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 
 /**
  * Wires the object graph.
@@ -56,6 +59,20 @@ class TyporbContainer(context: Context) {
 
     fun selectModelVariant(variant: ModelCatalog.Variant) {
         selectedModelVariant = variant
+    }
+
+    init {
+        // Mirrors the variant setting into the engine's resolver.
+        //
+        // The dashboard writes this setting, but the accessibility service is an independent entry
+        // point: dictation can run in a process where the dashboard was never opened, and until now
+        // the engine would have resolved "recommended" while the user had a different build selected.
+        serviceScope.launch {
+            settingsRepository.settings
+                .map { it.modelVariantId }
+                .distinctUntilChanged()
+                .collect { id -> selectModelVariant(ModelCatalog.variant(id)) }
+        }
     }
 
     private val groqApi: com.typorb.cloud.groq.GroqApi by lazy { GroqClientFactory.groqApi() }

@@ -3,6 +3,7 @@ package com.typorb.domain
 import com.typorb.model.ContextMode
 import com.typorb.model.ProcessingEngine
 import com.typorb.model.ProcessingStage
+import com.typorb.model.TranscriptionLanguage
 
 /**
  * One dictation cycle: raw 16 kHz mono PCM plus the user's formatting preferences.
@@ -15,6 +16,14 @@ class DictationRequest(
     val mode: ContextMode,
     /** Optional textual hint (e.g. an app hint about the focused field). Never sent by default. */
     val fieldHint: String? = null,
+    /**
+     * Language the speaker is expected to be using.
+     *
+     * Carried on the request rather than read from settings inside each engine, so the value an
+     * engine acted on is the value the coordinator captured when the user stopped talking — which is
+     * also what the debug console then reports.
+     */
+    val language: TranscriptionLanguage = TranscriptionLanguage.AUTO,
 )
 
 /** A pipeline step reported back to the UI so the processing pill can describe what is happening. */

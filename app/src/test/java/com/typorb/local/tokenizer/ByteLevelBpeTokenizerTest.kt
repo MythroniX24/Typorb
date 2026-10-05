@@ -62,6 +62,22 @@ class ByteLevelBpeTokenizerTest {
     }
 
     @Test
+    fun `a forced language replaces the english token in the prompt`() {
+        val hindi = ByteLevelBpeTokenizer.fromJson(
+            """{"model":{"vocab":{"h":0,"<|endoftext|>":50257,"<|startoftranscript|>":50258,"<|en|>":50259,"<|hi|>":50276,"<|transcribe|>":50359,"<|notimestamps|>":50363},"merges":[]}}""",
+        )
+        assertEquals(listOf(50258L, 50276L, 50359L, 50363L), hindi.buildPrompt("<|hi|>").toList())
+        assertEquals(listOf(50258L, 50259L, 50359L, 50363L), hindi.buildPrompt().toList())
+    }
+
+    @Test
+    fun `a language the vocabulary does not define is skipped, not substituted`() {
+        // This vocabulary has no `<|hi|>`: a checkpoint that lacks the token still has to decode
+        // rather than fall over or quietly reuse English's token.
+        assertEquals(listOf(50258L, 50359L, 50363L), tokenizer.buildPrompt("<|hi|>").toList())
+    }
+
+    @Test
     fun `english-only checkpoint prompt omits tokens its vocabulary lacks`() {
         val englishOnly = ByteLevelBpeTokenizer.fromJson(
             """{"model":{"vocab":{"h":0,"<|endoftext|>":50257,"<|startoftranscript|>":50258,"<|notimestamps|>":50363},"merges":[]}}""",

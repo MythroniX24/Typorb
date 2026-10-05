@@ -36,6 +36,8 @@ class RealTokenizerSmokeTest {
         // GPT-2 base (50 258) + Whisper's added tokens up to id 51 864.
         assertEquals(51_865, tokenizer.vocabularySize)
         assertEquals(listOf(50258L, 50259L, 50359L, 50363L), tokenizer.buildPrompt().toList())
+        // The Hindi prompt the language setting asks for; 50276 is Whisper's `<|hi|>`.
+        assertEquals(listOf(50258L, 50276L, 50359L, 50363L), tokenizer.buildPrompt("<|hi|>").toList())
         assertEquals(" the", tokenizer.decode(listOf(tokenizer.idOfToken("Ġthe")!!)))
         assertTrue(tokenizer.isStopToken(50257L))
     }

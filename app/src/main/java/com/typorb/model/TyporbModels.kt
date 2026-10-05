@@ -11,6 +11,46 @@ enum class ProcessingEngine {
 }
 
 /**
+ * Which language the engines should expect the speaker to be using.
+ *
+ * Hinglish — Hindi and English mixed inside one sentence — is the reason this exists. Whisper told to
+ * expect English tries to hear Hindi words *as* English, and the transcript comes back transliterated
+ * or quietly translated instead of written down. Cloud mode can therefore let Whisper detect the
+ * language itself, which is what handles code mixing properly, and the forced options are there for
+ * when detection guesses wrong.
+ */
+enum class TranscriptionLanguage(
+    val label: String,
+    val description: String,
+    /** ISO-639-1 code sent to Groq, or `null` to let Whisper detect the language itself. */
+    val requestCode: String?,
+    /** Decoder prompt token the on-device engine starts from. */
+    val promptToken: String,
+) {
+    AUTO(
+        label = "Auto",
+        description = "Detect the language per recording — best for Hinglish.",
+        requestCode = null,
+        // The offline engine has no detection pass of its own: it is a quantised tiny checkpoint
+        // whose first-token language guess is not reliable enough to gamble a dictation on, so auto
+        // means English there. Pick Hindi for Hindi speech.
+        promptToken = "<|en|>",
+    ),
+    ENGLISH(
+        label = "English",
+        description = "Always English.",
+        requestCode = "en",
+        promptToken = "<|en|>",
+    ),
+    HINDI(
+        label = "Hindi",
+        description = "Always Hindi — the local model answers in Devanagari.",
+        requestCode = "hi",
+        promptToken = "<|hi|>",
+    ),
+}
+
+/**
  * The tone/structure the AI engine should reshape a raw transcript into.
  *
  * [systemInstruction] is appended verbatim to the cloud engine's system prompt and is also used by
