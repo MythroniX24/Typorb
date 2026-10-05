@@ -17,6 +17,7 @@ app/src/main/assets/whisper/tokenizer.json
 *.jks
 *.keystore
 keystore.properties
+typorb-signing-secrets.txt
 
 # IDE
 .idea/

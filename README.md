@@ -212,6 +212,55 @@ artifact.
 
 ---
 
+## Installing the APK — and Play Protect
+
+Sideloading Typorb raises a Play Protect warning ("Play Protect doesn't recognize this app's
+developer", with *Install anyway* sometimes behind *More details*). It is not a detection of
+anything in the app: Android shows it for **any** app installed from outside a store whose signing
+key Google has no history for. Typorb meets it more often than most because its permissions —
+accessibility, overlay, microphone — are exactly the ones malware asks for, and because every release
+so far was signed with a throwaway key generated inside CI (see the workflow header).
+
+**Install anyway (works today)**
+
+1. Tap **More details → Install anyway**. If MIUI's own scanner warns afterwards, tap
+   **Install anyway / Continue** there too.
+2. If the dialog only offers *Don't install*, turn scanning off for the install and back on after:
+   Play Store → profile → Play Protect → gear icon → **Scan apps with Play Protect**. MIUI puts the
+   same toggle under Settings → Google → *Settings for Google apps*.
+3. **Uninstall the previous Typorb first.** Every release so far carries a different signature, so
+   Android refuses to upgrade in place.
+
+**The actual fix — one stable signing key**
+
+```bash
+sh tools/generate-signing-key.sh          # writes the keystore + the four secret values
+```
+
+Add the four secrets it prints (`TYPORB_KEYSTORE_BASE64`, `TYPORB_STORE_PASSWORD`,
+`TYPORB_KEY_ALIAS`, `TYPORB_KEY_PASSWORD`). From the next release on, every build is signed by the
+same developer: it installs over the previous one instead of demanding an uninstall, and Play
+Protect sees one identity rather than a new one per build.
+
+**Paths that never raise the warning**
+
+* `adb install -r app-release.apk` — installs from a PC and skips Play Protect's install-time block
+  entirely (the on-device scan still runs afterwards).
+* **Google Play internal testing** — one-time $25 developer account, an internal test track, and Play
+  distributes and signs the app itself (Play App Signing). Play-distributed apps are trusted by Play
+  Protect by construction, and no key has to be generated or stored locally.
+
+**Android developer verification (starting 30 September 2026)**
+
+Protections began rolling out on 30 September 2026 for apps from participating stores in select
+regions on certified Android devices, expanding globally through 2027
+([developer.android.com/developer-verification](https://developer.android.com/developer-verification)).
+Registration ties a package name (`com.typorb`) to a **signing key** and a verified developer
+identity, so the stable key above is the prerequisite either way. Personal use fits a **limited
+distribution account** (up to 20 devices, no government ID, no registration fee), and power users can
+keep installing unverified apps through the advanced flow. Apps distributed outside Play register in
+the Android Developer Console; Play Console covers Play apps automatically.
+
 ## When the orb does not appear
 
 The Settings → Debug console answers this from the device itself — read the verdict line first, then
