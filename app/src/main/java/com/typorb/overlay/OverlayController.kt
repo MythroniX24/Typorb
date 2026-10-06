@@ -34,13 +34,19 @@ import kotlinx.coroutines.flow.StateFlow
  *
  * ## Who sizes the window
  *
- * The composition does. [TyporbOverlayContent] animates the pill's rectangle and reports every frame
- * of that animation through `onPillBoxChanged`; this class turns each report into a
- * `WindowManager.LayoutParams` write. That ordering matters more than it looks: the window *is* the
- * clip rectangle the pill is drawn inside, so a window that lags its content cuts the content. The
- * morph used to run here, in a `ValueAnimator`, while Compose animated the same rectangle on its own
- * clock — which is exactly how a tap turned into a pill drawn inside a rectangle that had not caught
- * up yet.
+ * The composition says how big the pill is, once per state change, and this class turns that into a
+ * `WindowManager.LayoutParams` write — twice per change, never more:
+ *
+ *  * on the change itself, the window is written to the **hull** of the pill that is leaving and the
+ *    pill that is arriving, so it contains every frame of the morph in between;
+ *  * [OverlayMetrics.MORPH_MS] later, it is written again, to the new pill alone.
+ *
+ * The window *is* the clip rectangle the pill is drawn inside, so a window that lags its content cuts
+ * the content. The revision before this one had the composition report the box on **every animation
+ * frame** and wrote the window on each report: correct on paper, and on a cheap phone a stream of
+ * `updateViewLayout` binder calls at the frame rate, where the one frame the window fell behind was a
+ * visible tear. Two writes per state change cannot fall behind — the window is already large enough
+ * before the first frame of the animation is drawn.
  *
  * The window is `box + SHADOW_PADDING_DP` on each side so the soft shadow has somewhere to fall, and
  * its right and top edges are pinned to the [OverlayMetrics.Anchor] — the pill's top-right corner.
@@ -97,11 +103,33 @@ class OverlayController(
     private var keyboardHeightPx: Int = 0
     private var removePending: Runnable? = null
 
-    /** The pill box the composition last reported, in dp. `null` until it reports once. */
-    private var pillBoxDp: Pair<Int, Int>? = null
+    /** The pill size the composition last reported, in dp. `null` until it reports once. */
+    private var pillSizeDp: Pair<Int, Int>? = null
+
+    /**
+     * The box the window is currently sized to, in dp: the hull of the last two pill sizes.
+     *
+     * Kept apart from [pillSizeDp] because they are the same value for all but the
+     * [OverlayMetrics.MORPH_MS] of a state transition — and during exactly that window the difference
+     * is what stops the outgoing pill being clipped.
+     */
+    private var windowBoxDp: Pair<Int, Int>? = null
+
+    /** The scheduled shrink back to the pill's own size; see [onPillSizeChanged]. */
+    private var shrinkPending: Runnable? = null
 
     /** The window rectangle already written, so a repeated evaluation is not an IPC round trip. */
     private var writtenWindow: OverlayMetrics.Window? = null
+
+    /**
+     * Screen bounds, cached.
+     *
+     * `WindowManager.currentWindowMetrics` is a binder call to the system, and a drag asks for the
+     * bounds on every move event — up to 120 times a second, on the same thread that has to hand the
+     * new position back to the window manager. Caching it halves the cost of a drag frame; the cache
+     * is dropped whenever the screen could plausibly have changed shape (a show, a new IME height).
+     */
+    private var cachedScreenSize: Pair<Int, Int>? = null
 
     /**
      * Where the orb's top-right corner is, in screen px.
@@ -172,15 +200,20 @@ class OverlayController(
             removePending = null
             existing.animate().cancel()
             existing.alpha = 1f
-            existing.scaleX = 1f
-            existing.scaleY = 1f
+            existing.translationY = 0f
             applyLayout()
             return true
         }
         removePending?.let { mainHandler.removeCallbacks(it) }
         removePending = null
-        pillBoxDp = null
+        shrinkPending?.let { mainHandler.removeCallbacks(it) }
+        shrinkPending = null
+        pillSizeDp = null
+        windowBoxDp = null
         writtenWindow = null
+        // The screen may have changed shape since the orb was last up — a rotation, split screen, a
+        // foldable — and this is a moment where asking the system costs nothing.
+        cachedScreenSize = null
 
         val padding = dp(OverlayMetrics.SHADOW_PADDING_DP)
 
@@ -212,7 +245,7 @@ class OverlayController(
                         showWaveform = currentSettings.waveformEnabled,
                         contentPadding = OverlayMetrics.SHADOW_PADDING_DP.dp,
                         idleSizeDp = currentSettings.overlaySizeDp,
-                        onPillBoxChanged = ::onPillBoxChanged,
+                        onPillSizeChanged = ::onPillSizeChanged,
                     )
                 }
             }
@@ -309,6 +342,9 @@ class OverlayController(
     fun updateKeyboardHeight(imeHeightPx: Int) {
         if (imeHeightPx == keyboardHeightPx) return
         keyboardHeightPx = imeHeightPx
+        // An IME that changed height is also the signal that the screen itself was re-laid-out
+        // (rotation, split screen), which is the other thing the cached bounds depend on.
+        cachedScreenSize = null
         if (host != null) applyLayout()
     }
 
@@ -321,6 +357,8 @@ class OverlayController(
     fun hide() {
         val dragHost = host ?: return
         dragHost.cancelGesture()
+        shrinkPending?.let { mainHandler.removeCallbacks(it) }
+        shrinkPending = null
         windowTypeInUse = null
         val hideRunnable = Runnable {
             if (host === dragHost) {
@@ -354,6 +392,8 @@ class OverlayController(
     fun removeNow() {
         removePending?.let { mainHandler.removeCallbacks(it) }
         removePending = null
+        shrinkPending?.let { mainHandler.removeCallbacks(it) }
+        shrinkPending = null
         val dragHost = host
         host = null
         params = null
@@ -368,16 +408,33 @@ class OverlayController(
     }
 
     /**
-     * The composition reported the box the pill lives in.
+     * The composition reported the size the pill is becoming.
      *
-     * Called once per animation frame while a morph is in flight, which is the point: the window has
-     * to be the same rectangle the pill is being drawn into, on the same frame, or the pill is clipped
-     * by its own window.
+     * Emitted once per *change*, not once per frame: the value is the pill's target rectangle, so
+     * nothing in an animation touches this. Two window writes come out of it — the hull first, so the
+     * whole morph fits inside the window, then the pill's own size once the morph is over, so the orb
+     * does not sit in an oversized window (and an oversized touch target) for the rest of the session.
+     *
+     * The shrink is a timer rather than a callback from the composition on purpose. A callback would
+     * put the two sides back on the same clock, and a single missed frame on a slow device would
+     * leave the window permanently too small — the clipping bug, restored silently.
      */
-    private fun onPillBoxChanged(widthDp: Int, heightDp: Int) {
+    private fun onPillSizeChanged(widthDp: Int, heightDp: Int) {
         if (widthDp <= 0 || heightDp <= 0) return
-        pillBoxDp = widthDp to heightDp
+        val next = widthDp to heightDp
+        val previous = pillSizeDp
+        pillSizeDp = next
+        windowBoxDp = previous?.let { OverlayMetrics.hull(it, next) } ?: next
+        shrinkPending?.let { mainHandler.removeCallbacks(it) }
         applyLayout()
+
+        val shrink = Runnable {
+            shrinkPending = null
+            windowBoxDp = pillSizeDp
+            applyLayout()
+        }
+        shrinkPending = shrink
+        mainHandler.postDelayed(shrink, OverlayMetrics.MORPH_MS + SHRINK_GRACE_MS)
     }
 
     /**
@@ -398,13 +455,31 @@ class OverlayController(
             density = density,
         )
         if (target == writtenWindow) return
-        writtenWindow = target
+
+        val wasWidth = layoutParams.width
+        val wasHeight = layoutParams.height
+        val wasX = layoutParams.x
+        val wasY = layoutParams.y
         layoutParams.width = target.width
         layoutParams.height = target.height
         layoutParams.x = target.x
         layoutParams.y = target.y
-        runCatching { windowManager.updateViewLayout(host, layoutParams) }
-            .onFailure { Log.w(TAG, "Could not reposition the overlay", it) }
+
+        val applied = runCatching { windowManager.updateViewLayout(host, layoutParams) }
+        if (applied.isSuccess) {
+            writtenWindow = target
+            return
+        }
+        // Recorded as written only when it actually was. The params object is what the drag reads
+        // its origin from, so a mutation that never reached the window would make the *next* drag
+        // start from a position the orb is not at — which the user feels as the orb jumping away
+        // from their finger. The old rectangle is therefore put back, and the write retried on the
+        // next evaluation.
+        layoutParams.width = wasWidth
+        layoutParams.height = wasHeight
+        layoutParams.x = wasX
+        layoutParams.y = wasY
+        Log.w(TAG, "Could not reposition the overlay", applied.exceptionOrNull())
     }
 
     /**
@@ -415,7 +490,7 @@ class OverlayController(
      * would cut the pill that is still leaving.
      */
     private fun currentPillPx(): Pair<Int, Int> {
-        val boxDp = pillBoxDp ?: OverlayMetrics.pillSizeDp(state.value, settings.value.overlaySizeDp)
+        val boxDp = windowBoxDp ?: OverlayMetrics.pillSizeDp(state.value, settings.value.overlaySizeDp)
         return dp(boxDp.first) to dp(boxDp.second)
     }
 
@@ -437,7 +512,6 @@ class OverlayController(
                 anchor = stored,
                 screenWidthPx = screenWidthPx,
                 screenHeightPx = screenHeightPx,
-                keyboardHeightPx = keyboardHeightPx,
                 pillWidthPx = pillWidthPx,
                 pillHeightPx = pillHeightPx,
                 density = density,
@@ -470,7 +544,6 @@ class OverlayController(
                 ),
                 screenWidthPx = screenWidthPx,
                 screenHeightPx = screenHeightPx,
-                keyboardHeightPx = keyboardHeightPx,
                 pillWidthPx = pill.first,
                 pillHeightPx = pill.second,
                 density = density,
@@ -499,14 +572,23 @@ class OverlayController(
         override fun onLongPress(): Unit = onRetype()
     }
 
+    /**
+     * The orb arriving: it fades up and settles the last few dp into place.
+     *
+     * A *view* animation — `alpha` and `translationY`, both of which the window's render node can
+     * replay without a relayout — rather than a scale on the window. Scaling a window whose size is
+     * owned by the window manager is the same mistake as animating the window's rectangle on a second
+     * clock: the two disagree about where the orb's corner is, and the corner is where the pill is
+     * anchored. Translation does not touch `LayoutParams`, so the drag's origin stays exactly true
+     * even if the user grabs the orb mid-flight.
+     */
     private fun animateIn(target: OverlayDragHost) {
+        val offsetPx = IN_OFFSET_DP * density
         target.alpha = 0f
-        target.scaleX = IN_START_SCALE
-        target.scaleY = IN_START_SCALE
+        target.translationY = offsetPx
         target.animate()
             .alpha(1f)
-            .scaleX(1f)
-            .scaleY(1f)
+            .translationY(0f)
             .setDuration(SHOW_DURATION_MS)
             .setInterpolator(ANIMATION_INTERPOLATOR)
             .start()
@@ -515,8 +597,7 @@ class OverlayController(
     private fun animateOut(target: OverlayDragHost, onEnd: () -> Unit) {
         target.animate()
             .alpha(0f)
-            .scaleX(OUT_END_SCALE)
-            .scaleY(OUT_END_SCALE)
+            .translationY(OUT_OFFSET_DP * density)
             .setDuration(HIDE_DURATION_MS)
             .setInterpolator(ANIMATION_INTERPOLATOR)
             .withEndAction(onEnd)
@@ -526,7 +607,12 @@ class OverlayController(
     private fun dp(value: Int): Int = OverlayMetrics.dp(value, density)
 
     @Suppress("DEPRECATION")
-    private fun screenSize(): Pair<Int, Int> = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+    private fun screenSize(): Pair<Int, Int> = cachedScreenSize ?: queryScreenSize().also {
+        cachedScreenSize = it
+    }
+
+    @Suppress("DEPRECATION")
+    private fun queryScreenSize(): Pair<Int, Int> = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
         val bounds = windowManager.currentWindowMetrics.bounds
         bounds.width() to bounds.height()
     } else {
@@ -538,12 +624,23 @@ class OverlayController(
     companion object {
         private const val TAG = "OverlayController"
 
-        private const val SHOW_DURATION_MS = 180L
-        private const val HIDE_DURATION_MS = 150L
-        private const val REMOVE_DELAY_MS = 160L
+        private const val SHOW_DURATION_MS = 190L
+        private const val HIDE_DURATION_MS = 140L
+        private const val REMOVE_DELAY_MS = 150L
 
-        private const val IN_START_SCALE = 0.72f
-        private const val OUT_END_SCALE = 0.86f
+        /** How far below its resting place the orb starts (dp) — it rises the last few dp into view. */
+        private const val IN_OFFSET_DP = 8f
+
+        /** How far it drifts down on the way out (dp). */
+        private const val OUT_OFFSET_DP = 5f
+
+        /**
+         * How long after the morph to shrink the window to the new pill's own size.
+         *
+         * The composition's size animation is [OverlayMetrics.MORPH_MS]; the extra beats a frame of
+         * scheduling jitter so the window is never shrunk while the outgoing pill is still drawn.
+         */
+        private const val SHRINK_GRACE_MS = 60L
 
         private val ANIMATION_INTERPOLATOR =
             android.view.animation.PathInterpolator(0.2f, 0f, 0f, 1f)

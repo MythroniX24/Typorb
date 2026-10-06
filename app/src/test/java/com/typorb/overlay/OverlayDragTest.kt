@@ -45,7 +45,9 @@ class OverlayDragTest {
     fun `a drag is measured from where the finger went down, not from the last frame`() {
         // The finger travels to the right edge, is held there, and comes back to the middle. Accumulated
         // per frame the window would end up wherever the clamping left it; measured from the origin it
-        // returns exactly to the point under the finger.
+        // returns exactly to the point under the finger. This is what makes a drag that ran into an
+        // edge resume under the finger the instant it comes back — in any direction, which is what the
+        // old keyboard wall stopped happening downwards.
         val origin = 900
         val toEdge = OverlayDrag.windowTopLeft(origin, 400, dx = 4000f, dy = 0f).first
         val back = OverlayDrag.windowTopLeft(origin, 400, dx = 300f, dy = 0f).first
@@ -56,10 +58,16 @@ class OverlayDragTest {
     }
 
     @Test
-    fun `the long press resolves before the platform's own timeout`() {
-        // Under ViewConfiguration.getLongPressTimeout() (500ms) on purpose: this gesture is the "type
-        // my last words again" rescue, and holding a 48dp target for the full timeout is a lot to ask
-        // of someone whose text just did not appear.
-        assertTrue(OverlayDrag.LONG_PRESS_MS in 1..499)
+    fun `the long press waits longer than the platform's own timeout, so it cannot steal a drag`() {
+        // A long press and a drag start out identical and are only told apart by the clock, so this
+        // number is the whole margin a hesitant drag gets. It used to be 420ms — *under* the platform's
+        // 500ms long-press timeout — and a long press, once fired, cancelled the rest of the gesture: a
+        // finger that came to rest on the orb for two fifths of a second and only then moved was
+        // refused a drag entirely, which on a phone is simply "the orb will not move".
+        //
+        // The long press is the "type my last words again" rescue — something a user reaches for after
+        // a dictation went wrong — while the drag is the daily gesture. When the two collide the daily
+        // one has to win, and asking for a beat longer costs the rescue nothing.
+        assertTrue("a long press must not resolve inside the drag window", OverlayDrag.LONG_PRESS_MS > 500L)
     }
 }

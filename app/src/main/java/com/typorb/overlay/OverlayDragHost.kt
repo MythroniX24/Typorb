@@ -88,13 +88,20 @@ internal class OverlayDragHost(
             MotionEvent.ACTION_MOVE -> {
                 val dx = event.rawX - downRawX
                 val dy = event.rawY - downRawY
-                if (!dragging && OverlayDrag.isDrag(dx, dy, touchSlop)) {
+                // `!longPressFired` is not about politeness, it is about a real device report: a
+                // finger that came to rest for the long-press timeout and only *then* started moving
+                // used to have its movement ignored entirely, so the orb refused to be dragged for
+                // the whole rest of the gesture. The long press has already been delivered by then,
+                // and a gesture that has been resolved must not be re-resolved — so movement after it
+                // is simply not a drag. Nothing is thrown away by that: a user who wants to drag
+                // moves before the timeout, which now has room for them.
+                if (!dragging && !longPressFired && OverlayDrag.isDrag(dx, dy, touchSlop)) {
                     dragging = true
-                    // The finger is moving, so this was never a long press.
+                    // The finger is moving, so this was never going to be a long press.
                     removeCallbacks(longPressRunnable)
                     callbacks.onDragStarted()
                 }
-                if (dragging && !longPressFired) {
+                if (dragging) {
                     val (x, y) = OverlayDrag.windowTopLeft(startX, startY, dx, dy)
                     callbacks.moveWindowTo(x, y)
                 }
@@ -118,7 +125,8 @@ internal class OverlayDragHost(
      *
      * [tapped] is the whole difference between starting a dictation and moving the orb, so it is
      * decided here and nowhere else: a drag that ends over the same pixel it started from is still a
-     * drag, because the user saw the orb move.
+     * drag, because the user saw the orb move. A *long* press that never moved is neither a tap nor a
+     * drag, so the orb stays exactly where it was and the position is not written back.
      */
     private fun finishGesture(tapped: Boolean) {
         removeCallbacks(longPressRunnable)

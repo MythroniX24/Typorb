@@ -47,6 +47,17 @@ object OverlayMetrics {
     /** Widest failure capsule, leaving the standard 16dp margin on a 360dp-wide screen. */
     const val MAX_ERROR_WIDTH_DP = 320
 
+    /**
+     * How long the pill takes to change size, in ms.
+     *
+     * Shared between the composition, which animates the surface, and
+     * [com.typorb.overlay.OverlayController], which has to keep the window large enough for the pill
+     * for the whole of that transition and then shrink it back. Two constants with the same value
+     * would drift, and the failure mode of that drift is a clipped orb — the bug this number exists
+     * to prevent.
+     */
+    const val MORPH_MS = 240
+
     /** Rough advance width of one character of the 13sp capsule label, in dp. */
     private const val CHARACTER_WIDTH_DP = 6.6f
 
@@ -72,6 +83,19 @@ object OverlayMetrics {
         (message.length * CHARACTER_WIDTH_DP + ERROR_CHROME_DP)
             .toInt()
             .coerceIn(ERROR_WIDTH_DP, MAX_ERROR_WIDTH_DP)
+
+    /**
+     * The smallest box that holds both pill sizes.
+     *
+     * This is the whole reason the window does not have to be resized on every animation frame. When
+     * a state changes, the two pills in play are the one leaving and the one arriving, and a window
+     * the size of their hull contains both — so the window is written **once** at the start of the
+     * transition and once more when it is over, instead of sixty times a second. The old per-frame
+     * writes were the reason a tap could look torn: the composition drew the new pill while the
+     * window was still the old rectangle, and the window is the clip rectangle.
+     */
+    fun hull(a: Pair<Int, Int>, b: Pair<Int, Int>): Pair<Int, Int> =
+        maxOf(a.first, b.first) to maxOf(a.second, b.second)
 
     /** The pill's top-right corner, in screen pixels. */
     data class Anchor(val rightPx: Int, val topPx: Int)
@@ -110,34 +134,38 @@ object OverlayMetrics {
      * Pulls [anchor] back onto the screen.
      *
      * Only ever applied to a position the *user* chose — the default anchor is computed from the
-     * screen and cannot leave it. The rules are the ones a floating orb needs:
+     * screen and cannot leave it. Exactly one rule: **the pill stays fully visible**, with the shadow
+     * padding still on screen, so a drag can never park the orb half off an edge and leave it
+     * unreachable.
      *
-     *  * the pill stays fully visible, with the shadow padding still on screen, so a drag can never
-     *    park the orb half off an edge and leave it unreachable;
-     *  * a keyboard that is up is a wall: the orb slides along its top edge rather than disappearing
-     *    underneath it, which is the one place it can never be dragged back from.
+     * ## The keyboard used to be a wall here, and that was the drag bug
+     *
+     * This function used to stop the orb at the keyboard's top edge, reasoning that the orb must
+     * never slide underneath the keyboard. The reasoning was wrong twice over. The orb's *default*
+     * position — 16dp above the keyboard — **is** the bottom-most row that rule allows, so a downward
+     * drag moved the orb by the 14dp of shadow padding and then stopped: on a phone, a drag that
+     * simply refuses to go down reads as a broken drag, not as a wall. And the orb cannot be hidden
+     * by a keyboard anyway: this window is `TYPE_ACCESSIBILITY_OVERLAY`, which is layered above the
+     * IME, so an orb parked over the keyboard is still on top and still touchable.
+     *
+     * The keyboard therefore still decides where the orb *starts* (see [defaultAnchor]) and nothing
+     * else. Every direction of a drag now moves the orb.
      */
     fun clampAnchor(
         anchor: Anchor,
         screenWidthPx: Int,
         screenHeightPx: Int,
-        keyboardHeightPx: Int,
         pillWidthPx: Int,
         pillHeightPx: Int,
         density: Float,
     ): Anchor {
         val padding = dp(SHADOW_PADDING_DP, density)
-        val margin = dp(KeyboardGeometry.MARGIN_DP, density)
 
         val minRight = (pillWidthPx + padding).coerceAtMost(screenWidthPx)
         val maxRight = screenWidthPx.coerceAtLeast(minRight)
         val right = anchor.rightPx.coerceIn(minRight, maxRight)
 
-        val keyboard = keyboardHeightPx.coerceIn(0, screenHeightPx)
-        // With a keyboard up the pill must not sit under it, and 16dp above it is where it lives by
-        // default — so the drag simply stops there instead of hiding the orb behind the keyboard.
-        val floorPx = if (keyboard > 0) screenHeightPx - keyboard - margin else screenHeightPx
-        val maxTop = (floorPx - pillHeightPx - padding).coerceAtLeast(padding)
+        val maxTop = (screenHeightPx - pillHeightPx - padding).coerceAtLeast(padding)
         val top = anchor.topPx.coerceIn(padding, maxTop)
         return Anchor(right, top)
     }

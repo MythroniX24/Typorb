@@ -68,46 +68,78 @@ and the orb is added again.
 
 | State | Look | What happens |
 | --- | --- | --- |
-| Idle | 48dp rounded square (14dp radius), frosted glass, softly pulsing mic | Tap → start recording, `EFFECT_TICK` |
+| Idle | 48dp rounded square (14dp radius), frosted glass, a **still** mic | Tap → start recording, `EFFECT_TICK` |
 | Recording | 160dp capsule, 5 canvas bars driven by live RMS decibels | Tap → stop, waveform freezes, morph to processing |
 | Processing | Rotating `Brush.sweepGradient` border, cascading ellipsis, stage label | `ACTION_SET_TEXT` (or clipboard paste), `EFFECT_CLICK` |
 | Failed | Red capsule, widened to fit the reason | Auto-collapses after 2.6s |
 
-**The window is the pill's rectangle, and the composition owns it.** A window surface is clipped to its
-own bounds, so the pill has to be drawn inside a rectangle that is at least as big as it is — which
-means the two have to move together. Compose animates the pill once and reports the box it lives in on
-every frame of that animation; the overlay writes `WindowManager.LayoutParams` from each report. One
-animation, one clock, no clipping. The window is that box plus 14dp of shadow padding on each side, and
-its **top-right corner is the pill's anchor**: a capsule grows leftwards from it, so the edge the user
-aimed at never moves.
+**One surface, one clock, two window writes.** A window surface is clipped to its own bounds, so the pill
+has to be drawn inside a rectangle at least as big as it is. Earlier revisions tried to keep the two in
+step by animating both — a `ValueAnimator` on the window *and* a Compose size transform on the content —
+and later by having Compose report the box on **every animation frame** while the controller wrote the
+window on each report. Both were races: two clocks that disagree, and a window that for one frame is
+still the old rectangle, which is the pill visibly being cut off by its own window on a tap.
 
-Two more rules keep it from stuttering. The Compose crossfade is keyed on the state's *kind* (recording
+Now nothing races, because there is only one number in play. The pill's size is one
+`animateIntAsState`, on one easing curve; the composition reports that *target* to the controller once
+per state change; and the controller writes the window twice — first to the **hull** of the pill that is
+leaving and the pill that is arriving (so every frame of the morph is already inside it), then, when the
+morph is over, to the new pill alone. No frame of any animation writes the window, so no frame can
+outrun it. The window is that box plus 14dp of shadow padding on each side, and its **top-right corner
+is the pill's anchor**: a capsule grows leftwards from it, so the edge the user aimed at never moves.
+
+**Motion, and what it is for.** A state change morphs the surface on one `FastOutSlowInEasing` clock,
+moves the border colour with it, crossfades the contents (the outgoing one leaves in 80ms, the incoming
+one arrives after a 70ms beat, so contents are never squeezed inside a capsule that is still growing),
+and sweeps a soft indigo sheen across the glass once — the acknowledgement that a tap landed. Nothing
+the user is not touching animates: the resting orb is completely still, which matters because the idle
+state is the one the user is in when they drag it, and the two infinite transitions that used to run
+there (a glow and a geometric "breath") recomposed the overlay on every frame of every drag.
+
+Two rules keep the rest honest. The Compose crossfade is keyed on the state's *kind* (recording
 publishes a new amplitude list ~15×/s, and a state-keyed animation would re-trigger a fade per frame),
-and the window is only written when its rectangle actually changed, so the service's constant
-re-evaluation costs nothing. The box is the *larger* of the pill's current and target size, never the
-smaller: while a capsule collapses back into the orb the outgoing pill is still on screen, and a box
-that had already shrunk would cut it in half.
+and the window itself only fades and settles 8dp on the way in — a `View` animation on the render node,
+never a scale or a rectangle, because the window's rectangle belongs to the window manager and the drag
+reads its origin from it.
 
 ### 2b. Moving the orb
 
-**Drag it anywhere.** A touch on the orb is tracked in raw screen coordinates, so the pill follows the
-finger exactly — measuring the movement *inside* the view would feed the window's own movement back into
-the gesture and the orb would trail at half speed. Past the platform's touch slop the touch is a drag
-(the orb lifts, grows 6% and follows the finger); below it, it is a tap that starts a dictation, which
-is why the composition never sees a touch at all and the press animation is driven from the same
-handler. The drag stops at the screen edges and at the keyboard's top edge — the one place the orb could
-be moved to and never dragged back from.
+**Drag it anywhere, in every direction.** A touch on the orb is tracked in raw screen coordinates, so the
+pill follows the finger exactly — measuring the movement *inside* the view would feed the window's own
+movement back into the gesture and the orb would trail at half speed. Past the platform's touch slop the
+touch is a drag; below it, it is a tap that starts a dictation, which is why the composition never sees a
+touch at all and the press feedback is driven from the same handler. While the finger is down the orb
+tightens to 94% — and it deliberately does **not** grow while being carried. An orb that inflates under
+the finger reads as lag, not as feedback.
+
+The only rule on where it can be dropped is that the pill stays fully on screen, with its shadow
+padding, so a drag can never park it half off an edge. That rule used to also stop the orb at the
+keyboard's top edge — and because the orb's own resting place is 16dp *above* that edge, the wall sat
+one row below its default position: a downward drag moved 14dp and stopped, which does not feel like a
+boundary, it feels like a broken drag. The wall is gone. A keyboard cannot hide the orb anyway — this
+window is `TYPE_ACCESSIBILITY_OVERLAY`, which is layered above the IME, so an orb parked over the
+keyboard is still on top, still visible and still touchable.
 
 The dropped position is written to Settings on release (not per frame), so it survives the window being
-recreated, the keyboard opening and closing, and a reboot. Until the user moves it, the position is
-recomputed from the keyboard height on every frame, which is what keeps the orb 16dp above the IME as it
-rises and falls. With no keyboard on screen, the whole lower screen is reachable.
+recreated, the keyboard opening and closing, and a reboot. Until the user moves it, the position is still
+recomputed from the keyboard height, which is what keeps the orb 16dp above the IME as it rises and
+falls. Two smaller things make a drag smooth on a cheap phone: the screen bounds are cached rather than
+re-queried (that query is a binder call, and a drag asks up to 120 times a second), and a window write
+that WindowManager refuses is rolled back out of the layout params, so the next drag cannot start from a
+position the orb is not at.
 
 **Long press** the orb to type the last transcript again, without saying it a second time. It is the
 escape hatch for the worst failure this app has: words that were captured, transcribed, and then refused
 by the field. The pill reports the retry exactly like a normal dictation — same failure message, same
 clipboard fallback — and it is ignored while a take is running, because the press belongs to the
 recording at that point.
+
+The long press is 700ms, well past the platform's own 500ms timeout, and that is deliberate: a long
+press and a drag begin with the same gesture and are only told apart by the clock, so the long press has
+to give a hesitant drag every chance to become one. At the old 420ms — *under* the platform timeout — a
+finger that rested on the orb before moving was refused a drag for the rest of the gesture, and a long
+press that had already fired now blocks nothing either. The drag is the daily gesture; the retype is a
+rescue. When they collide, the drag wins.
 
 ### 3. Text injection
 
@@ -258,7 +290,7 @@ tensor contract.
 
 ```bash
 ./gradlew assembleDebug           # app/build/outputs/apk/debug/app-debug.apk
-./gradlew testDebugUnitTest       # 152 unit tests (see below)
+./gradlew testDebugUnitTest       # 153 unit tests (see below)
 sh tools/fetch-whisper-model.sh   # optional: bake the weights in for offline dev
 ```
 
@@ -350,6 +382,15 @@ The pipeline, in order, each step tried only after the last one was checked:
    focus themselves.
 5. If all of that fails the words are **left on the clipboard** and the pill says
    `Copied — long-press to paste.` The text is never silently dropped.
+
+Two rules make that ladder land more often without ever doubling a sentence. The read-back asks **two**
+questions — what the node the write went to says, and what the field the *system* is pointing at right
+now says — because the write's own node can have gone stale, and a stale node used to report a
+successful write as a failure and send the pipeline round the whole ladder a second time. And the ladder
+is retried (once, after 260ms) **only when no route reported a write at all**: a field that was not
+ready yet is worth one more pass, while a field that took the text and hid it is not, because writing
+again on top of a write the field will not confirm is how one dictation arrives twice. When something
+was written and cannot be confirmed, the text goes to the clipboard intact and the pill says so.
 
 **Then long-press the orb to type the same words again.** The last transcript is kept for exactly this:
 if the field refused it, you do not have to say the sentence twice. The retry runs the same pipeline and

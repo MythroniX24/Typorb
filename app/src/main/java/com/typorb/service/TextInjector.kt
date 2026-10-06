@@ -44,6 +44,21 @@ import kotlinx.coroutines.withContext
  *    silently discards writes. The field is now resolved at commit time from the system's own input
  *    focus ([EditableFieldInspector.probe]), with the tap-time capture kept as the fallback for when
  *    the keyboard has since closed.
+ * 4. **A read-back only ever consulted the node the write went to.** If that node had gone stale,
+ *    its text could not be read even though the sentence was sitting in the field — so the write was
+ *    called a failure, the next route wrote the same words again, and the user got them twice. The
+ *    read-back now also asks the field the *system* is pointing at ([liveFocusedNode]), which is a
+ *    different question from "what does this old node say" and is the only one of the two that
+ *    cannot be out of date.
+ *
+ * ## The ladder is tried twice, but never to double a sentence
+ *
+ * A field that refuses everything is usually a field that was not ready yet — an app re-laying out
+ * after the keyboard closed. [LADDER_PASSES] therefore runs the whole ladder once more after a short
+ * beat, and that second pass is safe precisely because it only ever happens when **no route reported a
+ * write at all**. The moment any route says it wrote something, the ladder stops being retried: a
+ * second write on top of one the field will not confirm is how a dictation lands twice, and twice is
+ * worse than a sentence left on the clipboard for the user to paste.
  *
  * The route ladder, in order:
  *  1. **The platform's own input connection** on Android 13+ ([commitViaInputMethod]) — the same
@@ -125,8 +140,22 @@ class TextInjector(private val service: AccessibilityService) {
         val source: EditableFieldInspector.Source,
     )
 
+    /**
+     * What one route did.
+     *
+     * @param method the route that delivered the text, or `null` when this one did not.
+     * @param performed whether the field accepted a *write*. Kept apart from [method] because it is
+     *   the difference between "refused" and "took it and hid it", which is the difference between a
+     *   safe retry and a duplicated sentence.
+     */
+    private data class RouteResult(
+        val method: Method? = null,
+        val performed: Boolean = false,
+    )
+
     /** The injection target and everything known about it, resolved at commit time. */
     private data class Target(
+        /** The field to write into. */
         val node: AccessibilityNodeInfo,
         /** The field's current content, or `null` when it could not be proven. */
         val text: String?,
@@ -174,49 +203,53 @@ class TextInjector(private val service: AccessibilityService) {
         if (content.isEmpty()) {
             return@withContext Result(Method.NONE, focusedFieldFound = false, detail = "empty transcript")
         }
+        injectWithRetry(content)
+    }
 
-        val target = resolveTarget()
-        if (target == null) {
-            return@withContext failed(
-                content = content,
-                focusedFieldFound = false,
-                detail = "no editable field found",
-            )
-        }
+    /**
+     * The ladder, and the single retry it is allowed.
+     *
+     * Kept apart from [inject] so the target can be resolved again for the second pass: a [Target] is
+     * a node *plus* the text that node held, and both are facts about an instant — reusing the first
+     * pass's target for a retry would retry with the same stale answer that failed.
+     */
+    private suspend fun injectWithRetry(content: String): Result {
+        var target = resolveTarget()
+            ?: return failed(content, focusedFieldFound = false, detail = "no editable field found")
 
         val attempts = mutableListOf<String>()
         try {
-            if (commitViaInputMethod(content, target, attempts)) {
-                return@withContext success(Method.A11Y_IME, target, attempts)
-            }
-
-            // A rebuild of the whole field is only offered when its content was proven. Otherwise the
-            // first route is paste, which cannot prepend a placeholder or delete text it never read.
-            if (target.contentProven) {
-                if (writeAndVerify(target.node, content, target.text!!, attempts, Method.ACTION_SET_TEXT)) {
-                    return@withContext success(Method.ACTION_SET_TEXT, target, attempts)
+            repeat(LADDER_PASSES) { pass ->
+                val outcome = runLadder(target, content, attempts)
+                outcome.method?.let { return success(it, target, attempts) }
+                // A write the field will not confirm. Writing again is how one sentence lands twice,
+                // and twice is worse than a sentence left on the clipboard for the user to paste.
+                if (outcome.performed) {
+                    return failed(
+                        content = content,
+                        focusedFieldFound = true,
+                        detail = "the field reported a write it will not show, so it was not written " +
+                            "again · ${target.description} (${attempts.joinToString("; ")})",
+                    )
                 }
-            } else {
-                attempts += "field content unreadable, rebuild skipped"
+                if (pass < LADDER_PASSES - 1) {
+                    attempts += "nothing was even written; retrying the ladder"
+                    delay(LADDER_RETRY_DELAY_MS)
+                    // The field may only have been unreachable at the first pass — a window changing
+                    // under the keyboard, an editor recreated when the IME moved. A fresh lookup is
+                    // the whole point of a second pass.
+                    target = resolveTarget() ?: target
+                }
             }
 
-            if (pasteViaClipboard(target.node, content, attempts)) {
-                return@withContext success(Method.CLIPBOARD_PASTE, target, attempts)
-            }
-
-            val focused = focusThenWrite(target, content, attempts)
-            if (focused != null) {
-                return@withContext success(focused, target, attempts)
-            }
-
-            return@withContext failed(
+            return failed(
                 content = content,
                 focusedFieldFound = true,
-                detail = "all routes failed · ${target.description} (${attempts.joinToString("; ")})",
+                detail = "all routes refused · ${target.description} (${attempts.joinToString("; ")})",
             )
         } catch (error: Exception) {
             Log.w(TAG, "Text injection failed", error)
-            return@withContext failed(
+            return failed(
                 content = content,
                 focusedFieldFound = true,
                 detail = "injection threw ${error::class.java.simpleName} · ${target.description} " +
@@ -352,12 +385,12 @@ class TextInjector(private val service: AccessibilityService) {
         text: String,
         target: Target,
         attempts: MutableList<String>,
-    ): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return false
+    ): RouteResult {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return RouteResult()
         val connection = runCatching { accessibilityInputConnection() }.getOrNull()
         if (connection == null) {
             attempts += "input connection unavailable"
-            return false
+            return RouteResult()
         }
         return withContext(NonCancellable) {
             try {
@@ -365,15 +398,60 @@ class TextInjector(private val service: AccessibilityService) {
             } catch (error: Throwable) {
                 Log.w(TAG, "Input connection commit refused", error)
                 attempts += "input connection refused"
-                return@withContext false
+                return@withContext RouteResult()
             }
             // Verified through the field whenever there is one to ask. The connection itself reports
             // nothing — `commitText` returns void — so without this a commit into a replaced editor
-            // would be indistinguishable from one that landed.
-            if (verifyWrite(target.node, text)) return@withContext true
-            attempts += "input connection committed nothing the field can see"
-            false
+            // would be indistinguishable from one that landed. A commit that threw did not happen;
+            // one that returned is treated as a write, because the platform gives no other answer.
+            if (verifyWrite(target.node, text)) {
+                RouteResult(method = Method.A11Y_IME, performed = true)
+            } else {
+                attempts += "input connection committed nothing the field can see"
+                RouteResult(performed = true)
+            }
         }
+    }
+
+    /**
+     * One pass of the ladder: the keyboard's own route, then set-text, then paste, then a focused
+     * retry. Returns as soon as a route lands.
+     */
+    private suspend fun runLadder(
+        target: Target,
+        content: String,
+        attempts: MutableList<String>,
+    ): RouteResult {
+        var performed = false
+
+        commitViaInputMethod(content, target, attempts).let { result ->
+            result.method?.let { return result }
+            performed = performed || result.performed
+        }
+
+        // A rebuild of the whole field is only offered when its content was proven. Otherwise the
+        // first write route is paste, which cannot prepend a placeholder or delete text it never read.
+        if (target.contentProven) {
+            writeAndVerify(target.node, content, target.text!!, attempts, Method.ACTION_SET_TEXT)
+                .let { result ->
+                    result.method?.let { return result }
+                    performed = performed || result.performed
+                }
+        } else {
+            attempts += "field content unreadable, rebuild skipped"
+        }
+
+        pasteViaClipboard(target.node, content, attempts).let { result ->
+            result.method?.let { return result }
+            performed = performed || result.performed
+        }
+
+        focusThenWrite(target, content, attempts).let { result ->
+            result.method?.let { return result }
+            performed = performed || result.performed
+        }
+
+        return RouteResult(performed = performed)
     }
 
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
@@ -397,7 +475,7 @@ class TextInjector(private val service: AccessibilityService) {
         baseline: String,
         attempts: MutableList<String>,
         method: Method,
-    ): Boolean {
+    ): RouteResult {
         val target = TranscriptJoin.join(existing = baseline, addition = content)
         val arguments = Bundle().apply {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, target)
@@ -407,11 +485,11 @@ class TextInjector(private val service: AccessibilityService) {
         }.getOrDefault(false)
         if (!performed) {
             attempts += "${method.name} refused"
-            return false
+            return RouteResult()
         }
-        if (verifyWrite(node, content)) return true
+        if (verifyWrite(node, content)) return RouteResult(method = method, performed = true)
         attempts += "${method.name} reported ok but the field did not change"
-        return false
+        return RouteResult(performed = true)
     }
 
     /**
@@ -429,12 +507,29 @@ class TextInjector(private val service: AccessibilityService) {
      */
     private suspend fun verifyWrite(node: AccessibilityNodeInfo, content: String): Boolean {
         repeat(VERIFY_ATTEMPTS) { attempt ->
-            runCatching { node.refresh() }
-            if (TranscriptJoin.landed(textOf(node), content)) return true
+            if (showsText(node, content)) return true
+            // The node the write went to is one answer. The field the *system* is pointing at right
+            // now is a better one: it is a live lookup, it cannot be a node left over from before
+            // the dictation, and a write that landed in a freshly recreated editor is only visible
+            // there. Without this question, that write looked like a failure and the next route wrote
+            // the same sentence a second time.
+            val live = liveFocusedNode()
+            if (live != null && live != node && showsText(live, content)) return true
             if (attempt < VERIFY_ATTEMPTS - 1) delay(VERIFY_SETTLE_MS)
         }
         return false
     }
+
+    /** `true` when [node], re-read from the live window, now contains [content]. */
+    private fun showsText(node: AccessibilityNodeInfo, content: String): Boolean {
+        runCatching { node.refresh() }
+        return TranscriptJoin.landed(textOf(node), content)
+    }
+
+    /** The editable field holding input focus at this instant, or `null`. */
+    private fun liveFocusedNode(): AccessibilityNodeInfo? = runCatching {
+        EditableFieldInspector.probe(service, service.getRootInActiveWindow()).node
+    }.getOrNull()
 
     /**
      * The text a field holds, tolerating the node going stale mid-read.
@@ -459,9 +554,9 @@ class TextInjector(private val service: AccessibilityService) {
         node: AccessibilityNodeInfo,
         text: String,
         attempts: MutableList<String>,
-    ): Boolean = withContext(NonCancellable) paste@{
+    ): RouteResult = withContext(NonCancellable) paste@{
         val clipboard = service.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-            ?: return@paste false
+            ?: return@paste RouteResult()
 
         // From Android 10 a background app may be unable to *read* the clipboard; that is fine,
         // we simply have nothing to restore and clear it afterwards instead.
@@ -476,14 +571,14 @@ class TextInjector(private val service: AccessibilityService) {
             }.getOrDefault(false)
             if (!pasted) {
                 attempts += "paste refused"
-                return@paste false
+                return@paste RouteResult()
             }
             // Settled before restoring as well: the app reads the clipboard on its own schedule, and
             // putting the old value back underneath it is how a paste turns into the wrong text.
             delay(PASTE_SETTLE_MS)
-            val landed = verifyWrite(node, text)
-            if (!landed) attempts += "paste reported ok but the field did not change"
-            landed
+            if (verifyWrite(node, text)) return@paste RouteResult(Method.CLIPBOARD_PASTE, performed = true)
+            attempts += "paste reported ok but the field did not change"
+            RouteResult(performed = true)
         } finally {
             restoreClipboard(clipboard, savedClip)
         }
@@ -500,32 +595,28 @@ class TextInjector(private val service: AccessibilityService) {
      * asked to take focus, abandoning the write half-way would leave the user's caret somewhere new
      * with their words still nowhere.
      */
-    /** @return the [Method] that worked, or `null` when even the focused retry was refused. */
+    /** @return the route this attempt delivered by, or a result that says what it refused to do. */
     private suspend fun focusThenWrite(
         target: Target,
         content: String,
         attempts: MutableList<String>,
-    ): Method? = withContext(NonCancellable) {
+    ): RouteResult = withContext(NonCancellable) {
         val focused = runCatching {
             target.node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
         }.getOrDefault(false)
         if (!focused) {
             attempts += "focus refused"
-            return@withContext null
+            return@withContext RouteResult()
         }
         // The focus change and the write are two binder round-trips; a field that has just been told
         // to take focus can still be settling when the next one lands.
         delay(FOCUS_SETTLE_MS)
         if (target.contentProven) {
-            if (writeAndVerify(target.node, content, target.text!!, attempts, Method.FOCUS_THEN_SET_TEXT)) {
-                Method.FOCUS_THEN_SET_TEXT
-            } else {
-                null
-            }
+            writeAndVerify(target.node, content, target.text!!, attempts, Method.FOCUS_THEN_SET_TEXT)
         } else {
             // Nothing was ever proven about this field's contents, so the focused retry is a paste as
             // well: focusing a field is safe to ask for, rebuilding one around text nobody read is not.
-            if (pasteViaClipboard(target.node, content, attempts)) Method.CLIPBOARD_PASTE else null
+            pasteViaClipboard(target.node, content, attempts)
         }
     }
 
@@ -546,6 +637,17 @@ class TextInjector(private val service: AccessibilityService) {
         const val FOCUS_ATTEMPTS = 8
         const val FOCUS_RETRY_DELAY_MS = 90L
         const val CLIPBOARD_SETTLE_MS = 140L
+
+        /**
+         * How many times the whole ladder runs.
+         *
+         * Twice, and the second pass only when the first wrote nothing at all: a field that was not
+         * ready yet is worth one more attempt, a field that took the text and hid it is not.
+         */
+        const val LADDER_PASSES = 2
+
+        /** How long to wait before the second pass, so a field mid-relayout has time to settle. */
+        const val LADDER_RETRY_DELAY_MS = 260L
 
         /**
          * How long to leave the dictated text on the clipboard before putting the user's own value
