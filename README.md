@@ -73,16 +73,41 @@ and the orb is added again.
 | Processing | Rotating `Brush.sweepGradient` border, cascading ellipsis, stage label | `ACTION_SET_TEXT` (or clipboard paste), `EFFECT_CLICK` |
 | Failed | Red capsule, widened to fit the reason | Auto-collapses after 2.6s |
 
-**The orb *is* the window, so tapping it is a resize.** The window is exactly the pill's rectangle plus
-14dp of shadow padding, which means every state change has to move a real
-`WindowManager.LayoutParams` — and that is animated: width, height, x and y are lerped over 190 ms, so a
-tap opens the square into the recording capsule instead of swapping rectangles. Two rules keep it from
-stuttering: the Compose content crossfade is keyed on the state's *kind* (recording publishes a new
-amplitude list ~15×/s, and a state-keyed animation would re-trigger a fade per frame), and the layout
-is only re-applied when its destination actually changed, so the service's constant re-evaluation
-cannot restart a morph that is still in flight. A successful dictation also no longer hides the orb:
-it stays put while the keyboard is up and is taken down by the next evaluation once it is not, which
-removes the blink-away-and-back that used to follow every insert.
+**The window is the pill's rectangle, and the composition owns it.** A window surface is clipped to its
+own bounds, so the pill has to be drawn inside a rectangle that is at least as big as it is — which
+means the two have to move together. Compose animates the pill once and reports the box it lives in on
+every frame of that animation; the overlay writes `WindowManager.LayoutParams` from each report. One
+animation, one clock, no clipping. The window is that box plus 14dp of shadow padding on each side, and
+its **top-right corner is the pill's anchor**: a capsule grows leftwards from it, so the edge the user
+aimed at never moves.
+
+Two more rules keep it from stuttering. The Compose crossfade is keyed on the state's *kind* (recording
+publishes a new amplitude list ~15×/s, and a state-keyed animation would re-trigger a fade per frame),
+and the window is only written when its rectangle actually changed, so the service's constant
+re-evaluation costs nothing. The box is the *larger* of the pill's current and target size, never the
+smaller: while a capsule collapses back into the orb the outgoing pill is still on screen, and a box
+that had already shrunk would cut it in half.
+
+### 2b. Moving the orb
+
+**Drag it anywhere.** A touch on the orb is tracked in raw screen coordinates, so the pill follows the
+finger exactly — measuring the movement *inside* the view would feed the window's own movement back into
+the gesture and the orb would trail at half speed. Past the platform's touch slop the touch is a drag
+(the orb lifts, grows 6% and follows the finger); below it, it is a tap that starts a dictation, which
+is why the composition never sees a touch at all and the press animation is driven from the same
+handler. The drag stops at the screen edges and at the keyboard's top edge — the one place the orb could
+be moved to and never dragged back from.
+
+The dropped position is written to Settings on release (not per frame), so it survives the window being
+recreated, the keyboard opening and closing, and a reboot. Until the user moves it, the position is
+recomputed from the keyboard height on every frame, which is what keeps the orb 16dp above the IME as it
+rises and falls. With no keyboard on screen, the whole lower screen is reachable.
+
+**Long press** the orb to type the last transcript again, without saying it a second time. It is the
+escape hatch for the worst failure this app has: words that were captured, transcribed, and then refused
+by the field. The pill reports the retry exactly like a normal dictation — same failure message, same
+clipboard fallback — and it is ignored while a take is running, because the press belongs to the
+recording at that point.
 
 ### 3. Text injection
 
@@ -92,16 +117,31 @@ removes the blink-away-and-back that used to follow every insert.
    window, a tree walk of that window, and finally the same question asked of every *other* visible
    window. Every route rejects nodes that live in the keyboard's own windows, so a dictation can never
    be typed into an IME's search box instead of the app — which looks exactly like "my text never
-   appeared".
-2. `performAction(ACTION_SET_TEXT, Bundle(ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE))`. Fast, and the
-   user's clipboard is never touched.
-3. If that returns `false` (WebViews, hardened apps, some Compose fields): save the clipboard, copy
-   the text in, `ACTION_PASTE`, then **restore the original clipboard** (or clear it if Android
-   refused to share it, which it does from Android 10 for background apps).
-4. **If there is no field, or both actions are refused, the dictated text is left on the clipboard**
-   and the pill says `Copied — long-press to paste.` The words are the whole point of the feature, so
-   a failure to deliver them to a field is not a reason to make them disappear; a bare "couldn't
-   insert" left the user with nothing at all to show for the dictation.
+   appeared". The field captured when the orb was tapped is the fallback for when the keyboard has
+   closed since, not the first choice: it is re-resolved at commit time, because a node held across
+   several seconds of dictation routinely goes stale.
+2. **The platform's own input connection** on Android 13+, where the accessibility service is granted
+   one — the same `commitText` a keyboard uses, straight into the field at the caret, with no node and
+   no clipboard.
+3. `performAction(ACTION_SET_TEXT, Bundle(ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE))` — but *only* for a
+   field whose current content could actually be read. `ACTION_SET_TEXT` replaces the whole field, so
+   rebuilding one around text nobody read is how a placeholder ends up inside the user's message.
+   What is read is kept, so a dictation into a half-written message **adds to it** instead of replacing
+   it.
+4. **`ACTION_PASTE`** from the clipboard: it inserts at the field's own caret, so it is structurally
+   incapable of inventing or deleting text. The original clipboard is restored afterwards (or cleared
+   if Android refused to share it, which it does from Android 10 for background apps).
+5. **`ACTION_FOCUS` then repeat**, for the fields that refuse everything until they hold focus
+   themselves — WhatsApp's message box is the canonical one.
+6. **If there is no field, or every route is refused, the dictated text is left on the clipboard** and
+   the pill says `Copied — long-press to paste.` The words are the whole point of the feature, so a
+   failure to deliver them to a field is not a reason to make them disappear.
+
+Every check on the result starts with `AccessibilityNodeInfo.refresh()`. A node is a *snapshot*: its
+`.text` is the field's content from when the node was fetched, and `performAction` does not update it.
+Reading it straight after a write therefore answers with the value from *before* the write — which is
+how a successful set-text was recorded as "the field did not change" and the same sentence was written a
+second time by the next route.
 
 ---
 
@@ -218,7 +258,7 @@ tensor contract.
 
 ```bash
 ./gradlew assembleDebug           # app/build/outputs/apk/debug/app-debug.apk
-./gradlew testDebugUnitTest       # 144 unit tests (see below)
+./gradlew testDebugUnitTest       # 152 unit tests (see below)
 sh tools/fetch-whisper-model.sh   # optional: bake the weights in for offline dev
 ```
 
@@ -301,19 +341,24 @@ action was performed — several apps (WhatsApp's message box among them) perfor
 
 The pipeline, in order, each step tried only after the last one was checked:
 
-1. **`ACTION_SET_TEXT`** into the field captured **when you tapped the orb**. The node is remembered
-   at tap time on purpose: dictation takes seconds, and by the time the transcript is ready you may
-   have moved the caret or the IME may have swapped windows — a field looked up *afterwards* is
-   regularly the wrong node. The existing text is read first and kept, so a dictation into a
-   half-written message **adds to it** instead of replacing it.
-2. **`ACTION_PASTE`** from the clipboard, with the original clipboard restored afterwards.
-3. **`ACTION_FOCUS` then `ACTION_SET_TEXT` again**, for fields that refuse a bare set-text until they
-   hold focus themselves.
-4. If all of that fails the words are **left on the clipboard** and the pill says
+1. **The accessibility input connection** (Android 13+): the field is written through the platform's own
+   editor connection, exactly like a keyboard.
+2. **`ACTION_SET_TEXT`** — only for a field whose contents could be read, and the existing text is kept,
+   so a dictation into a half-written message **adds to it** instead of replacing it.
+3. **`ACTION_PASTE`** from the clipboard, with the original clipboard restored afterwards.
+4. **`ACTION_FOCUS` then the same two routes again**, for fields that refuse anything until they hold
+   focus themselves.
+5. If all of that fails the words are **left on the clipboard** and the pill says
    `Copied — long-press to paste.` The text is never silently dropped.
 
-Settings → Debug console reports the route and the exact reason: `Injection` names which step won
-(`ACTION_SET_TEXT`, `CLIPBOARD_PASTE`, `FOCUS_THEN_SET_TEXT`, `COPIED_TO_CLIPBOARD`) and, when
+**Then long-press the orb to type the same words again.** The last transcript is kept for exactly this:
+if the field refused it, you do not have to say the sentence twice. The retry runs the same pipeline and
+reports the same way, so it costs nothing and recovers from a refusal that had nothing to do with the
+recording.
+
+Settings → Debug console reports the route, the field it went into, and the exact reason: `Injection`
+names which step won (`A11Y_IME`, `ACTION_SET_TEXT`, `CLIPBOARD_PASTE`, `FOCUS_THEN_SET_TEXT`,
+`COPIED_TO_CLIPBOARD`) followed by `EditText in com.whatsapp · live focus (system findFocus)` or, when
 something went wrong, which steps were refused and why.
 
 ## When the orb does not appear
@@ -340,8 +385,9 @@ stage first: it names exactly how far the take got.
 | `Audio captured: 0 ms` | Microphone produced nothing | Grant microphone permission; check MIUI's Privacy → Microphone log |
 | `Last dictation: failed · CLOUD` + `dictation error` | Groq refused or was unreachable | The error is printed verbatim; a 401 means the key, not the network |
 | `Last dictation: failed · LOCAL` | Offline model missing or too slow | Download the int8 model (Settings → *Offline model*); the bundled fp32 weights are many times slower on an A53 |
-| `Injection: COPIED_TO_CLIPBOARD` | No editable field could be reached | The text is on the clipboard — long-press the field and paste |
-| `Injection: NONE` | Field refused both routes | Check `Text field focused` / `Focus lookup`; the field may be a canvas or a game |
+| `Injection: COPIED_TO_CLIPBOARD` | No editable field could be reached | The text is on the clipboard — long-press the field and paste, or **long-press the orb to type it again** |
+| `Injection: NONE` | Every route was refused | Check `Text field focused` / `Focus lookup`; the field may be a canvas or a game. Long-press the orb to retry once it is a real text box |
+| `Injection: … · EditText in com.android.systemui` | The text went into the wrong field — a system window claimed focus | Tap your app's field, then **long-press the orb** to type the same words there |
 
 **Copy report** copies all of it, including the verbatim error, so a bug report carries the evidence
 rather than a description of the symptom.

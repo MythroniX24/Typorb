@@ -1,11 +1,11 @@
 package com.typorb.ui.overlay
 
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateIntAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -15,44 +15,44 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.wrapContentSize
-import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
-import androidx.compose.ui.draw.alpha
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -66,121 +66,174 @@ import com.typorb.ui.theme.TyporbShapes
 /**
  * The floating Typorb.
  *
- * The window is sized by [com.typorb.overlay.OverlayController] — deliberately larger than the pill
- * by [contentPadding] on every side so the soft ambient shadow has somewhere to fall; a window
- * surface is clipped to its own bounds, so a shadow drawn in a pill-sized window would be cut off.
+ * ## One animation, not two
  *
+ * This used to be a double animation and it looked it. The window rectangle was morphed by a
+ * `ValueAnimator` in [com.typorb.overlay.OverlayController] while Compose animated its own content
+ * size on top — two clocks, two curves, and a window that for two hundred milliseconds was still the
+ * idle square while the recording capsule inside it was already 160dp wide. A window surface is
+ * clipped to its own bounds, so the pill was **guillotined** on every state change: the visible
+ * symptom was an orb that visibly broke when tapped.
+ *
+ * Now Compose animates once and the window follows it. The box that *contains* the pill grows with
+ * [animateIntAsState], this composable reports that box outward through [onPillBoxChanged], and the
+ * controller makes the `WindowManager` rectangle exactly that box plus [contentPadding]. Because the
+ * window is sized from the same value the pill is drawn with, it can never be smaller than what is
+ * inside it, and the morph is a single smooth interpolation instead of a race.
+ *
+ * The box is the **larger** of the pill's current and target size, never the smaller: while a capsule
+ * collapses back to the idle orb the outgoing pill is still on screen, and a box that had already
+ * shrunk to the orb would cut it in half.
+ *
+ * The pill is drawn into the box's **top-right** corner — the same corner the controller anchors the
+ * window and the drag to — so a capsule grows leftwards and the edge the user aimed at never moves.
+ *
+ * @param pressed the finger is down on the orb; the tap has been registered but not yet resolved.
+ * @param dragging the orb is being moved, so the press reads as a lift rather than a press.
  * @param cornerRadiusDp user-adjustable corner radius, driven by Settings.
- * @param showWaveform when `false` the recording capsule shows a steady pulse instead of the live
- *   amplitude bars.
+ * @param showWaveform when `false` the recording capsule shows a steady pulse instead of live bars.
+ * @param onPillBoxChanged reports the box in dp, every frame of a morph.
  */
 @Composable
 fun TyporbOverlayContent(
     state: OverlayUiState,
-    onTap: () -> Unit,
+    pressed: Boolean = false,
+    dragging: Boolean = false,
     cornerRadiusDp: Int = TyporbSettings.DEFAULT_OVERLAY_CORNER_DP,
     showWaveform: Boolean = true,
     contentPadding: Dp = 0.dp,
     idleSizeDp: Int = TyporbSettings.DEFAULT_OVERLAY_SIZE_DP,
+    onPillBoxChanged: (Int, Int) -> Unit = { _, _ -> },
 ) {
     val shape = TyporbShapes.overlayCorner(cornerRadiusDp)
-    val interactionSource = remember { MutableInteractionSource() }
+    val (targetWidthDp, targetHeightDp) = OverlayMetrics.pillSizeDp(state, idleSizeDp)
 
-    // Press feedback. The window is the pill's own rectangle, so a tap is a resize *and* the only
-    // thing the user can see happen is the morph starting a beat later — which read as the tap not
-    // registering at all. Scaling down on press answers the finger immediately, under the finger,
-    // before any of the window bookkeeping runs.
-    val pressed by interactionSource.collectIsPressedAsState()
-    val pressScale by animateFloatAsState(
-        targetValue = if (pressed) PRESSED_SCALE else 1f,
-        animationSpec = tween(durationMillis = if (pressed) 90 else 220),
+    val animatedWidthDp by animateIntAsState(
+        targetValue = targetWidthDp,
+        animationSpec = tween(MORPH_MS),
+        label = "pill-width",
+    )
+    val animatedHeightDp by animateIntAsState(
+        targetValue = targetHeightDp,
+        animationSpec = tween(MORPH_MS),
+        label = "pill-height",
+    )
+    val boxWidthDp = maxOf(animatedWidthDp, targetWidthDp)
+    val boxHeightDp = maxOf(animatedHeightDp, targetHeightDp)
+
+    // The window has to be told about every step of the morph, because it *is* the clip rectangle the
+    // pill is drawn inside. `snapshotFlow` conflates to the animation's own frame rate, and the effect
+    // runs once for the whole life of the window: keying it on the callback would restart the flow on
+    // every recomposition, which is every frame of the animation it exists to report.
+    val reportBox by rememberUpdatedState(onPillBoxChanged)
+    LaunchedEffect(Unit) {
+        snapshotFlow { boxWidthDp to boxHeightDp }.collect { (widthDp, heightDp) ->
+            reportBox(widthDp, heightDp)
+        }
+    }
+
+    val scale by animateFloatAsState(
+        targetValue = when {
+            dragging -> DRAG_SCALE
+            pressed -> PRESSED_SCALE
+            else -> 1f
+        },
+        animationSpec = tween(durationMillis = if (pressed || dragging) 90 else 220),
         label = "press-scale",
     )
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .clickable(
-                interactionSource = interactionSource,
-                indication = null,
-                onClick = onTap,
-            ),
-        contentAlignment = Alignment.Center,
+            .padding(contentPadding),
+        contentAlignment = Alignment.TopEnd,
     ) {
-        AnimatedContent(
-            targetState = state,
-            // `clip = false` on the size transform: without it AnimatedContent clips the outgoing
-            // pill to the *incoming* pill's box for the length of the crossfade, and because the
-            // incoming capsule is much wider than the outgoing square orb, a failure or a recording
-            // stop visibly guillotined the orb it was animating away from.
-            transitionSpec = {
-                fadeIn(tween(FADE_IN_MS)) togetherWith
-                    fadeOut(tween(FADE_OUT_MS)) using
-                    SizeTransform(clip = false)
-            },
-            // Keyed on the state's *kind*, never on the state itself. Recording publishes a new
-            // amplitude list roughly fifteen times a second, and with the default key every one of
-            // those counts as a new target — which is a fresh fade-in/fade-out per frame and the
-            // capsule visibly strobing instead of animating. The same reasoning keeps a repeated
-            // failure message from re-crossfading.
-            contentKey = { it::class },
-            label = "typorb-state",
-        ) { current ->
-            val content: @Composable (Modifier) -> Unit = when (current) {
-                is OverlayUiState.Idle -> ({ m -> IdlePill(m, shape, idleSizeDp) })
-                is OverlayUiState.Recording -> ({ m ->
-                    RecordingPill(m, current.amplitudes, shape, showWaveform)
-                })
-                is OverlayUiState.Processing -> ({ m -> ProcessingPill(m, current.stage.label, shape) })
-                is OverlayUiState.Failed -> ({ m -> FailedPill(m, current.message, shape) })
-            }
-            // `wrapContentSize` rather than `fillMaxSize`: the pill is sized by its own content, and
-            // the window is sized to match it. Stretching the pill to the window instead meant the
-            // outgoing and incoming pills were laid out at *each other's* size during a crossfade —
-            // the square orb squashed into a capsule, then the capsule stretched back — which is what
-            // made every state change look like a broken layout rather than a transition.
-            Box(
-                modifier = Modifier
-                    .wrapContentSize()
-                    .padding(contentPadding)
-                    .scale(pressScale),
-                contentAlignment = Alignment.Center,
-            ) {
-                content(Modifier)
+        Box(
+            modifier = Modifier.size(boxWidthDp.dp, boxHeightDp.dp),
+            contentAlignment = Alignment.TopEnd,
+        ) {
+            AnimatedContent(
+                targetState = state,
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.TopEnd,
+                // Fade only. The size is animated by the box above, so a size transform here would
+                // put a second animation back on top of the first — the exact mistake this file is
+                // recovering from.
+                transitionSpec = {
+                    fadeIn(tween(FADE_IN_MS)) togetherWith fadeOut(tween(FADE_OUT_MS))
+                },
+                // Keyed on the state's *kind*, never on the state itself. Recording publishes a new
+                // amplitude list roughly fifteen times a second, and with the default key every one of
+                // those counts as a new target — which is a fresh fade-in/fade-out per frame and the
+                // capsule visibly strobing instead of animating.
+                contentKey = { it::class },
+                label = "typorb-state",
+            ) { current ->
+                val (widthDp, heightDp) = OverlayMetrics.pillSizeDp(current, idleSizeDp)
+                // Scaled around its own top-right corner so the press shrinks the pill towards the
+                // point the drag holds on to, instead of sliding it off that point.
+                PillScale(scale) {
+                    when (current) {
+                        is OverlayUiState.Idle -> IdlePill(shape, widthDp, heightDp)
+                        is OverlayUiState.Recording ->
+                            RecordingPill(shape, widthDp, heightDp, current.amplitudes, showWaveform)
+                        is OverlayUiState.Processing ->
+                            ProcessingPill(shape, widthDp, heightDp, current.stage.label)
+                        is OverlayUiState.Failed ->
+                            FailedPill(shape, widthDp, heightDp, current.message)
+                    }
+                }
             }
         }
     }
 }
 
-/** The shared white surface: soft ambient shadow plus a hairline border. */
+/** One pill at its own size, scaled around the anchor corner, with the shared surface dressing. */
+@Composable
+private fun PillScale(scale: Float, content: @Composable () -> Unit) {
+    Box(
+        modifier = Modifier.graphicsLayer {
+            scaleX = scale
+            scaleY = scale
+            // Its own top-right corner, which is the point the window and the drag both hold on to: a
+            // press then shrinks the pill towards that corner instead of sliding it off the point.
+            transformOrigin = TransformOrigin(1f, 0f)
+        },
+    ) {
+        content()
+    }
+}
+
+/** The shared white surface: soft ambient shadow, a hairline border and a whisper of indigo. */
 @Composable
 private fun PillSurface(
-    modifier: Modifier = Modifier,
     shape: RoundedCornerShape,
+    widthDp: Int,
+    heightDp: Int,
     elevation: Dp = TyporbElevation.Overlay,
     borderColor: Color = TyporbPalette.Border,
-    content: @Composable () -> Unit,
+    content: @Composable BoxScope.() -> Unit,
 ) {
     Box(
-        modifier = modifier
-            // Every pill is exactly as wide as its content and exactly one capsule tall. The overlay
-            // window is sized from the same numbers, so the surface and its window agree instead of
-            // the surface being stretched to whatever rectangle the window happens to be mid-morph
-            // through.
-            .height(48.dp)
-            .wrapContentWidth()
+        modifier = Modifier
+            .size(widthDp.dp, heightDp.dp)
             .shadow(elevation = elevation, shape = shape, clip = false)
             .clip(shape)
             .background(TyporbPalette.Surface)
+            .background(
+                Brush.verticalGradient(
+                    listOf(TyporbPalette.Indigo.copy(alpha = SURFACE_TINT), Color.Transparent),
+                ),
+            )
             .border(1.dp, borderColor, shape),
         contentAlignment = Alignment.Center,
-        content = { content() },
+        content = content,
     )
 }
 
-/** Idle: a 48dp rounded square of glossy white with a softly pulsing indigo mic. */
+/** Idle: the orb itself — a rounded square of glossy white with a softly pulsing indigo mic. */
 @Composable
-private fun IdlePill(modifier: Modifier, shape: RoundedCornerShape, idleSizeDp: Int) {
+private fun IdlePill(shape: RoundedCornerShape, widthDp: Int, heightDp: Int) {
     val transition = rememberInfiniteTransition(label = "idle-pulse")
     val glow by transition.animateFloat(
         initialValue = 0.30f,
@@ -192,8 +245,8 @@ private fun IdlePill(modifier: Modifier, shape: RoundedCornerShape, idleSizeDp: 
         label = "idle-glow",
     )
     val breath by transition.animateFloat(
-        initialValue = 0.97f,
-        targetValue = 1.05f,
+        initialValue = 0.98f,
+        targetValue = 1.04f,
         animationSpec = infiniteRepeatable(
             animation = tween(1500, easing = LinearEasing),
             repeatMode = RepeatMode.Reverse,
@@ -201,16 +254,13 @@ private fun IdlePill(modifier: Modifier, shape: RoundedCornerShape, idleSizeDp: 
         label = "idle-breathe",
     )
 
-    PillSurface(
-        modifier = modifier.size(idleSizeDp.dp),
-        shape = shape,
-    ) {
+    PillSurface(shape = shape, widthDp = widthDp, heightDp = heightDp) {
         Icon(
             imageVector = Icons.Rounded.Mic,
             contentDescription = "Start dictation",
             tint = TyporbPalette.Indigo.copy(alpha = 0.72f + 0.28f * glow),
             modifier = Modifier
-                .size(23.dp)
+                .size((widthDp * MIC_FRACTION).dp)
                 .scale(breath),
         )
     }
@@ -219,16 +269,21 @@ private fun IdlePill(modifier: Modifier, shape: RoundedCornerShape, idleSizeDp: 
 /** Recording: a white capsule with live amplitude bars and a stop affordance. */
 @Composable
 private fun RecordingPill(
-    modifier: Modifier,
-    amplitudes: List<Float>,
     shape: RoundedCornerShape,
+    widthDp: Int,
+    heightDp: Int,
+    amplitudes: List<Float>,
     showWaveform: Boolean,
 ) {
-    PillSurface(modifier = modifier, shape = shape, borderColor = TyporbPalette.Indigo.copy(alpha = 0.30f)) {
+    PillSurface(
+        shape = shape,
+        widthDp = widthDp,
+        heightDp = heightDp,
+        borderColor = TyporbPalette.Indigo.copy(alpha = 0.30f),
+    ) {
         Row(
             modifier = Modifier
-                .height(48.dp)
-                .width(160.dp)
+                .fillMaxSize()
                 .padding(horizontal = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -326,7 +381,7 @@ private fun StopGlyph() {
 
 /** Processing: a rotating indigo sweep border with a stage label and animated ellipsis. */
 @Composable
-private fun ProcessingPill(modifier: Modifier, label: String, shape: RoundedCornerShape) {
+private fun ProcessingPill(shape: RoundedCornerShape, widthDp: Int, heightDp: Int, label: String) {
     val transition = rememberInfiniteTransition(label = "processing")
     val sweep by transition.animateFloat(
         initialValue = 0f,
@@ -335,9 +390,9 @@ private fun ProcessingPill(modifier: Modifier, label: String, shape: RoundedCorn
         label = "sweep",
     )
 
-    PillSurface(modifier = modifier.width(190.dp), shape = shape) {
-        // Fills the surface, which now has a definite size of its own (190 x 48dp) rather than
-        // inheriting a window rectangle that was mid-morph.
+    PillSurface(shape = shape, widthDp = widthDp, heightDp = heightDp) {
+        // Fills the surface, which has a definite size of its own, so the sweep ring is measured
+        // against the capsule rather than against a window rectangle mid-morph.
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -363,7 +418,9 @@ private fun ProcessingPill(modifier: Modifier, label: String, shape: RoundedCorn
                 },
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 16.dp),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Spacer(
@@ -378,6 +435,7 @@ private fun ProcessingPill(modifier: Modifier, label: String, shape: RoundedCorn
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 EllipsisDots()
             }
@@ -415,16 +473,16 @@ private fun EllipsisDots() {
 
 /** Failure: a red-tinted capsule holding the reason the last dictation did not land. */
 @Composable
-private fun FailedPill(modifier: Modifier, message: String, shape: RoundedCornerShape) {
+private fun FailedPill(shape: RoundedCornerShape, widthDp: Int, heightDp: Int, message: String) {
     PillSurface(
-        modifier = modifier,
         shape = shape,
+        widthDp = widthDp,
+        heightDp = heightDp,
         borderColor = TyporbPalette.Danger.copy(alpha = 0.35f),
     ) {
         Row(
             modifier = Modifier
-                .height(48.dp)
-                .width(OverlayMetrics.errorWidthDp(message).dp)
+                .fillMaxSize()
                 .padding(horizontal = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -439,6 +497,7 @@ private fun FailedPill(modifier: Modifier, message: String, shape: RoundedCorner
                 color = TyporbPalette.TextPrimary,
                 fontSize = 13.sp,
                 maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -449,8 +508,20 @@ private const val MIN_LEVEL = 0.08f
 private const val MIN_BAR_FRACTION = 0.18f
 
 /** How far the pill shrinks under the finger. Enough to read as a press, not enough to look broken. */
-private const val PRESSED_SCALE = 0.88f
+private const val PRESSED_SCALE = 0.90f
 
-/** Crossfade timings. The outgoing pill leaves faster than the new one arrives, so the two never sit at half-opacity together. */
-private const val FADE_IN_MS = 180
+/** How far it grows while it is being carried, so a move never reads as a press. */
+private const val DRAG_SCALE = 1.06f
+
+/** Mic size relative to the idle orb, so a resized orb keeps its proportions. */
+private const val MIC_FRACTION = 0.46f
+
+/** Indigo tint along the top of every surface, fading to nothing by the middle. */
+private const val SURFACE_TINT = 0.08f
+
+/** The single morph duration: the box, the window and the pill all move on this one number. */
+private const val MORPH_MS = 200
+
+/** Crossfade timings. The outgoing pill leaves faster than the new one arrives. */
+private const val FADE_IN_MS = 160
 private const val FADE_OUT_MS = 110

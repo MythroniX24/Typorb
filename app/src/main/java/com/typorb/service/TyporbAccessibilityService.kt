@@ -71,6 +71,17 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
     private var lastDictationStartedAtMs = 0L
 
     /**
+     * The words of the last dictation, kept so they can be typed again without speaking them again.
+     *
+     * Injection is the one stage of this pipeline that a phone can refuse for reasons Typorb cannot
+     * see — a field that will not take text, a window that went away mid-sentence. Re-recording to
+     * recover from that costs the user their sentence twice, so the sentence is kept and the orb's long
+     * press puts it in again.
+     */
+    @Volatile
+    private var lastTranscript: String? = null
+
+    /**
      * Whether an editable field held focus at the last evaluation.
      *
      * This used to be the gate on visibility, cached and refreshed only from events raised by an app.
@@ -237,10 +248,18 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
             state = dictation.state,
             settings = container.settingsRepository.settings,
             onTap = ::onPillTapped,
+            onRetype = ::onRetypeRequested,
             onImeInsetChanged = imeDetector::reportInsetFallback,
             // "Display over other apps" is optional. It only decides whether a second window type
             // may be attempted when the platform refuses the accessibility one.
             canUseApplicationOverlay = { Permissions.isOverlayPermissionGranted(this) },
+            // The orb's position belongs to the user from the first drag onwards, so it is written
+            // down rather than recomputed: a position that resets itself would make the drag feel
+            // like it did not work. Written on drop only — see SettingsRepository.setOverlayAnchor.
+            onAnchorChanged = { rightPx, topPx ->
+                container.settingsRepository.setOverlayAnchor(rightPx, topPx)
+                OrbDiagnosticsBus.note("orb moved to $rightPx,$topPx")
+            },
         )
 
         // Attached before the first event can arrive, so the inset signal is never waiting on the
@@ -473,6 +492,27 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
         runCatching { powerManager.isInteractive }.getOrDefault(true)
 
     /**
+     * A long press on the orb: type the last transcript into whatever field is focused now.
+     *
+     * The escape hatch for the worst failure this app has — words that were captured, transcribed and
+     * then refused by the field. Ignored while a dictation is running, because the orb's press belongs
+     * to the recording at that point and there is nothing to retype yet.
+     */
+    private fun onRetypeRequested() {
+        val text = lastTranscript ?: return
+        val dictation = coordinator ?: return
+        val current = dictation.state.value
+        if (current !is OverlayUiState.Idle && current !is OverlayUiState.Failed) return
+        // The retry's latency is the injection's, not the original recording's.
+        lastDictationStartedAtMs = System.currentTimeMillis()
+        haptics.tick()
+        // The same head start the normal path gets: the field the user is in is captured before the
+        // work starts, so injection still has a target if focus cannot be read while it runs.
+        injector.rememberFocus()
+        dictation.retype(text)
+    }
+
+    /**
      * A tap either starts or stops a dictation.
      *
      * The focused field is captured *before* the toggle, and only on the way into recording. This is
@@ -515,7 +555,11 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
         )
     }
 
-    private suspend fun onTextReady(text: String) {        val settingsAtInjection = container.settingsRepository.current()
+    private suspend fun onTextReady(text: String) {
+        // Kept before injection is even attempted: whatever happens next, these are the words the user
+        // said, and the long press is what makes them recoverable.
+        lastTranscript = text
+        val settingsAtInjection = container.settingsRepository.current()
         val startedAtMs = System.currentTimeMillis() - lastDictationStartedAtMs
         val result = injector.inject(text)
         // The captured field belongs to one dictation; holding it would have the *next* one append
@@ -527,6 +571,7 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
             it.copy(lastInjection = "${result.method} · ${result.detail}")
         }
         when (result.method) {
+            TextInjector.Method.A11Y_IME,
             TextInjector.Method.ACTION_SET_TEXT,
             TextInjector.Method.CLIPBOARD_PASTE,
             TextInjector.Method.FOCUS_THEN_SET_TEXT,

@@ -52,6 +52,45 @@ class DictationCoordinator(
         }
     }
 
+    /**
+     * Types words that are already transcribed, without recording them again.
+     *
+     * Driven by a long press on the orb. The captured sentence did not land the first time — a field
+     * that refused it, a window that went away — and asking the user to say it again would charge them
+     * twice for the app's failure. Everything downstream behaves exactly as it does on the normal path,
+     * because this *is* that path with the recording step left out: the same injection, the same failure
+     * pill, the same clipboard fallback.
+     */
+    fun retype(text: String) {
+        val current = _state.value
+        if (current !is OverlayUiState.Idle && current !is OverlayUiState.Failed) return
+        dismissJob?.cancel()
+        processingJob?.cancel()
+        _state.value = OverlayUiState.Processing(ProcessingStage.UPDATING)
+        OrbDiagnosticsBus.update {
+            it.copy(
+                dictationStage = DictationStages.INSERTING,
+                dictationError = null,
+                dictationTranscriptChars = text.trim().length,
+                lastInjection = null,
+            )
+        }
+        processingJob = scope.launch {
+            try {
+                onTextReady(text)
+                _state.value = OverlayUiState.Idle
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Throwable) {
+                Log.w(TAG, "Retype failed", error)
+                failWith(
+                    (error as? TyporbException)?.message
+                        ?: "Couldn't type that. Tap the field and try again.",
+                )
+            }
+        }
+    }
+
     /** Called by the service when the keyboard closes: abort anything in flight. */
     fun reset() {
         if (_state.value is OverlayUiState.Idle) return

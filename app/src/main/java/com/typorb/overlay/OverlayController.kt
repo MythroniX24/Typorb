@@ -1,6 +1,5 @@
 package com.typorb.overlay
 
-import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.PixelFormat
 import android.os.Build
@@ -9,17 +8,20 @@ import android.os.Looper
 import android.util.Log
 import android.view.Gravity
 import android.view.WindowManager
+import android.widget.FrameLayout
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.ComposeView
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.ViewCompositionStrategy
+import androidx.compose.ui.unit.dp
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.setViewTreeLifecycleOwner
-import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import androidx.lifecycle.setViewTreeViewModelStoreOwner
+import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.typorb.data.TyporbSettings
 import com.typorb.model.OverlayUiState
 import com.typorb.ui.overlay.TyporbOverlayContent
@@ -28,17 +30,28 @@ import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Hosts the Typorb as a real window (`TYPE_ACCESSIBILITY_OVERLAY`) containing a single
- * [ComposeView].
+ * [ComposeView], wrapped in an [OverlayDragHost] that owns every touch on it.
  *
- * The window is sized explicitly per state — idle is a 48dp square, the working states are wide
- * capsules — so the WindowManager position is always exact and never depends on a measure pass.
- * Right edge is pinned 16dp from the display edge and the bottom sits 16dp above the keyboard.
+ * ## Who sizes the window
  *
- * Because the window *is* the pill's rectangle, tapping the orb is also a resize, and that resize is
- * animated ([applyLayout] lerps width, height and position over [MORPH_DURATION_MS]). Snapping it
- * instead — which is what happened while the size only followed the Settings flow — left the
- * recording capsule drawn inside a square idle window for up to a watchdog tick, and the jump read
- * as a broken layout rather than a transition.
+ * The composition does. [TyporbOverlayContent] animates the pill's rectangle and reports every frame
+ * of that animation through `onPillBoxChanged`; this class turns each report into a
+ * `WindowManager.LayoutParams` write. That ordering matters more than it looks: the window *is* the
+ * clip rectangle the pill is drawn inside, so a window that lags its content cuts the content. The
+ * morph used to run here, in a `ValueAnimator`, while Compose animated the same rectangle on its own
+ * clock — which is exactly how a tap turned into a pill drawn inside a rectangle that had not caught
+ * up yet.
+ *
+ * The window is `box + SHADOW_PADDING_DP` on each side so the soft shadow has somewhere to fall, and
+ * its right and top edges are pinned to the [OverlayMetrics.Anchor] — the pill's top-right corner.
+ *
+ * ## Who owns the position
+ *
+ * The user, once they have dragged it. A drag writes the new corner into Settings through
+ * [onAnchorChanged], so the orb is still where it was put after a reboot, and every later state
+ * change grows the capsule *away* from the corner the user chose instead of snapping back to the
+ * default. Until then the corner is recomputed from the keyboard height, which is what keeps the orb
+ * 16dp above the keyboard as the IME rises and falls.
  *
  * All three view-tree owners Compose requires are attached: [LifecycleOwner], a
  * [androidx.savedstate.SavedStateRegistryOwner] and a [androidx.lifecycle.ViewModelStoreOwner].
@@ -51,13 +64,17 @@ class OverlayController(
     context: Context,
     private val lifecycleOwner: LifecycleOwner,
     private val state: StateFlow<OverlayUiState>,
-    /** Drives the user-customisable overlay appearance. */
+    /** Drives the user-customisable overlay appearance and the saved orb position. */
     private val settings: StateFlow<TyporbSettings>,
     private val onTap: () -> Unit,
+    /** Long press: put the last transcript into the field again, without re-recording it. */
+    private val onRetype: () -> Unit,
     /** Reports `WindowInsetsCompat.Type.ime()` observations as an IME-height fallback signal. */
     private val onImeInsetChanged: (Int) -> Unit,
     /** Whether the OEM fallback window type may be used, i.e. "Display over other apps" is granted. */
     private val canUseApplicationOverlay: () -> Boolean,
+    /** The user dropped the orb here; the position is theirs from now on. */
+    private val onAnchorChanged: (rightPx: Int, topPx: Int) -> Unit,
 ) {
 
     private val appContext = context.applicationContext
@@ -75,19 +92,29 @@ class OverlayController(
     private val density = appContext.resources.displayMetrics.density
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    private var view: ComposeView? = null
+    private var host: OverlayDragHost? = null
     private var params: WindowManager.LayoutParams? = null
     private var keyboardHeightPx: Int = 0
     private var removePending: Runnable? = null
-    private var layoutAnimator: ValueAnimator? = null
+
+    /** The pill box the composition last reported, in dp. `null` until it reports once. */
+    private var pillBoxDp: Pair<Int, Int>? = null
+
+    /** The window rectangle already written, so a repeated evaluation is not an IPC round trip. */
+    private var writtenWindow: OverlayMetrics.Window? = null
 
     /**
-     * The window rectangle [applyLayout] is currently heading to.
+     * Where the orb's top-right corner is, in screen px.
      *
-     * The service re-applies the layout on every evaluation, so without this a morph still in flight
-     * would be restarted every few milliseconds instead of finishing.
+     * `null` means "wherever the keyboard puts it", which is the honest default: the orb belongs just
+     * above the keyboard. It becomes a fact the moment the user drags the orb, and from then on it is
+     * read back from Settings so it survives the window being recreated.
      */
-    private var layoutTarget: OverlayMetrics.Window? = null
+    private var anchor: OverlayMetrics.Anchor? = null
+
+    /** Press and drag state, read by the composition to animate the orb under the finger. */
+    private val pressed: MutableState<Boolean> = mutableStateOf(false)
+    private val dragging: MutableState<Boolean> = mutableStateOf(false)
 
     /** Set by [useFallbackWindowTypeNext] when the preferred type has just been lost on this device. */
     private var preferFallbackWindowType = false
@@ -112,7 +139,7 @@ class OverlayController(
     var windowTypeInUse: Int? = null
         private set
 
-    val isShowing: Boolean get() = view != null
+    val isShowing: Boolean get() = host != null
 
     /**
      * Whether the orb's view is genuinely attached to the display.
@@ -121,7 +148,7 @@ class OverlayController(
      * platform that removes an overlay window behind the app's back leaves the first `true` and the
      * second `false`, which is the only way the service can notice it has to add the orb again.
      */
-    val isAttached: Boolean get() = view?.isAttachedToWindow == true
+    val isAttached: Boolean get() = host?.isAttachedToWindow == true
 
     /**
      * Shows the pill, or re-positions it if it is already up.
@@ -131,7 +158,12 @@ class OverlayController(
      */
     fun show(imeHeightPx: Int): Boolean {
         keyboardHeightPx = imeHeightPx
-        val existing = view
+        // The saved position is re-read on every show, so a position the user reset in Settings takes
+        // effect the next time the orb appears instead of only after a service restart.
+        val saved = settings.value.overlayAnchor
+        anchor = if (saved == null) null else OverlayMetrics.Anchor(saved.first, saved.second)
+
+        val existing = host
         if (existing != null) {
             // A hide that is still animating out has to be cancelled, not raced with: its delayed
             // removal would take the window away *after* this call has already reported the orb as on
@@ -142,11 +174,13 @@ class OverlayController(
             existing.alpha = 1f
             existing.scaleX = 1f
             existing.scaleY = 1f
-            applyLayout(state.value, animate = true)
+            applyLayout()
             return true
         }
         removePending?.let { mainHandler.removeCallbacks(it) }
         removePending = null
+        pillBoxDp = null
+        writtenWindow = null
 
         val padding = dp(OverlayMetrics.SHADOW_PADDING_DP)
 
@@ -169,33 +203,29 @@ class OverlayController(
                 val currentState by state.collectAsState()
                 val currentSettings by settings.collectAsState()
 
-                // The window is sized outside Compose, so a change in the pill's own rectangle has to
-                // drive a re-layout: the Skia content would otherwise render the new pill clipped to
-                // the old window until the service's next evaluation.
-                //
-                // The key is the *size*, not the state. A state that publishes new data every frame
-                // (recording's amplitude list) must not restart this, and a state whose size depends
-                // on its content — a failure message, which widens the capsule — has to. Both fall out
-                // of comparing the rectangle the state asks for.
-                val pillSize = OverlayMetrics.pillSizeDp(
-                    currentState,
-                    currentSettings.overlaySizeDp,
-                )
-                androidx.compose.runtime.LaunchedEffect(pillSize) {
-                    applyLayout(currentState, animate = true)
-                }
-
                 TyporbTheme {
                     TyporbOverlayContent(
                         state = currentState,
-                        onTap = onTap,
+                        pressed = pressed.value,
+                        dragging = dragging.value,
                         cornerRadiusDp = currentSettings.overlayCornerRadiusDp,
                         showWaveform = currentSettings.waveformEnabled,
                         contentPadding = OverlayMetrics.SHADOW_PADDING_DP.dp,
                         idleSizeDp = currentSettings.overlaySizeDp,
+                        onPillBoxChanged = ::onPillBoxChanged,
                     )
                 }
             }
+        }
+
+        val dragHost = OverlayDragHost(appContext, dragCallbacks).apply {
+            addView(
+                composeView,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                ),
+            )
         }
 
         // Preferred type first, then the grant-gated fallback. Both are attempted rather than
@@ -217,16 +247,14 @@ class OverlayController(
                 y = 0
             }
 
-            val attempt = runCatching { windowManager.addView(composeView, layoutParams) }
+            val attempt = runCatching { windowManager.addView(dragHost, layoutParams) }
             if (attempt.isSuccess) {
-                view = composeView
+                host = dragHost
                 params = layoutParams
                 windowTypeInUse = type
                 lastWindowError = null
-                // Snapped, not morphed: this window is about to scale in from 0.72, and animating two
-                // sizes at once reads as a wobble.
-                applyLayout(state.value, animate = false)
-                animateIn(composeView)
+                applyLayout()
+                animateIn(dragHost)
                 Log.i(TAG, "Overlay window added with type=$type")
                 return true
             }
@@ -269,13 +297,9 @@ class OverlayController(
 
     /** Keyboard height changed while the pill is visible (IME show/hide animation). */
     fun updateKeyboardHeight(imeHeightPx: Int) {
-        // Guarded, and applied without the morph: the service reports its current idea of the keyboard
-        // height on *every* evaluation, and most of those repeat a value that is already in effect.
-        // Re-writing the layout then would snap a state morph that is still in flight, which is the
-        // one visible way this class could still make a tap look broken.
         if (imeHeightPx == keyboardHeightPx) return
         keyboardHeightPx = imeHeightPx
-        if (view != null) applyLayout(state.value, animate = false)
+        if (host != null) applyLayout()
     }
 
     /** Releases the owners backing the overlay. Call when the service itself goes away. */
@@ -285,19 +309,20 @@ class OverlayController(
 
     /** Removes the pill, animating it out first. */
     fun hide() {
-        val composeView = view ?: return
-        cancelLayoutAnimator()
+        val dragHost = host ?: return
+        dragHost.cancelGesture()
         windowTypeInUse = null
         val hideRunnable = Runnable {
-            if (view === composeView) {
-                runCatching { windowManager.removeView(composeView) }
+            if (host === dragHost) {
+                runCatching { windowManager.removeView(dragHost) }
                     .onFailure { Log.w(TAG, "Overlay already detached", it) }
-                view = null
+                host = null
                 params = null
+                writtenWindow = null
             }
             removePending = null
         }
-        animateOut(composeView) { mainHandler.postDelayed(hideRunnable, REMOVE_DELAY_MS) }
+        animateOut(dragHost) { mainHandler.postDelayed(hideRunnable, REMOVE_DELAY_MS) }
     }
 
     /**
@@ -319,108 +344,152 @@ class OverlayController(
     fun removeNow() {
         removePending?.let { mainHandler.removeCallbacks(it) }
         removePending = null
-        cancelLayoutAnimator()
-        val composeView = view
-        view = null
+        val dragHost = host
+        host = null
         params = null
+        writtenWindow = null
         windowTypeInUse = null
-        if (composeView != null) {
-            composeView.animate().cancel()
-            runCatching { windowManager.removeView(composeView) }
+        if (dragHost != null) {
+            dragHost.cancelGesture()
+            dragHost.animate().cancel()
+            runCatching { windowManager.removeView(dragHost) }
                 .onFailure { Log.w(TAG, "Overlay already detached", it) }
         }
     }
 
     /**
-     * Moves the window to where [currentState] belongs, morphing when [animate] is set.
+     * The composition reported the box the pill lives in.
      *
-     * Idle is a 48dp square and every working state is a wider capsule, and since the pill fills the
-     * window, following the state is what makes a tap expand into the recording capsule instead of
-     * drawing it clipped inside the old square.
+     * Called once per animation frame while a morph is in flight, which is the point: the window has
+     * to be the same rectangle the pill is being drawn into, on the same frame, or the pill is clipped
+     * by its own window.
      */
-    private fun applyLayout(currentState: OverlayUiState, animate: Boolean = false) {
-        val layoutParams = params ?: return
-        val target = windowFor(currentState)
-
-        if (!animate) {
-            layoutAnimator?.cancel()
-            layoutAnimator = null
-            layoutTarget = target
-            writeLayout(layoutParams, target)
-            return
-        }
-
-        // Same destination as the morph already running (or as the window already has): nothing to do.
-        if (layoutTarget == target &&
-            (layoutAnimator?.isRunning == true || layoutMatches(layoutParams, target))
-        ) {
-            return
-        }
-
-        val from = OverlayMetrics.Window(
-            width = layoutParams.width,
-            height = layoutParams.height,
-            x = layoutParams.x,
-            y = layoutParams.y,
-        )
-        layoutTarget = target
-        if (from == target) {
-            layoutAnimator?.cancel()
-            layoutAnimator = null
-            return
-        }
-
-        layoutAnimator?.cancel()
-        layoutAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = MORPH_DURATION_MS
-            interpolator = ANIMATION_INTERPOLATOR
-            addUpdateListener { animator ->
-                writeLayout(
-                    layoutParams,
-                    OverlayMetrics.Window.lerp(from, target, animator.animatedFraction),
-                )
-            }
-            start()
-        }
+    private fun onPillBoxChanged(widthDp: Int, heightDp: Int) {
+        if (widthDp <= 0 || heightDp <= 0) return
+        pillBoxDp = widthDp to heightDp
+        applyLayout()
     }
 
-    private fun layoutMatches(
-        layoutParams: WindowManager.LayoutParams,
-        window: OverlayMetrics.Window,
-    ): Boolean = layoutParams.width == window.width &&
-        layoutParams.height == window.height &&
-        layoutParams.x == window.x &&
-        layoutParams.y == window.y
-
-    private fun writeLayout(layoutParams: WindowManager.LayoutParams, window: OverlayMetrics.Window) {
-        layoutParams.width = window.width
-        layoutParams.height = window.height
-        layoutParams.x = window.x
-        layoutParams.y = window.y
-        runCatching { windowManager.updateViewLayout(view, layoutParams) }
+    /**
+     * Writes the window rectangle for the pill as it is right now.
+     *
+     * Idempotent and cheap on a repeat: the target is compared against the rectangle already written,
+     * so the 600ms watchdog and every accessibility event can call it without a stream of
+     * `updateViewLayout` transactions.
+     */
+    private fun applyLayout() {
+        val layoutParams = params ?: return
+        val pill = currentPillPx()
+        val anchor = resolvedAnchor(pill.first, pill.second)
+        val target = OverlayMetrics.windowFor(
+            anchor = anchor,
+            pillWidthPx = pill.first,
+            pillHeightPx = pill.second,
+            density = density,
+        )
+        if (target == writtenWindow) return
+        writtenWindow = target
+        layoutParams.width = target.width
+        layoutParams.height = target.height
+        layoutParams.x = target.x
+        layoutParams.y = target.y
+        runCatching { windowManager.updateViewLayout(host, layoutParams) }
             .onFailure { Log.w(TAG, "Could not reposition the overlay", it) }
     }
 
-    private fun windowFor(state: OverlayUiState): OverlayMetrics.Window {
-        val metrics = screenSize()
-        return OverlayMetrics.windowFor(
-            state = state,
-            idleSizeDp = settings.value.overlaySizeDp,
-            screenWidthPx = metrics.first,
-            screenHeightPx = metrics.second,
-            keyboardHeightPx = keyboardHeightPx,
-            density = density,
-        )
+    /**
+     * The pill's size in px for the window being written.
+     *
+     * The composition's own report wins whenever there is one: mid-morph it is the box that contains
+     * both the outgoing and the incoming pill, and sizing the window to the *target* state instead
+     * would cut the pill that is still leaving.
+     */
+    private fun currentPillPx(): Pair<Int, Int> {
+        val boxDp = pillBoxDp ?: OverlayMetrics.pillSizeDp(state.value, settings.value.overlaySizeDp)
+        return dp(boxDp.first) to dp(boxDp.second)
     }
 
-    /** Stops a morph in flight; the window is being removed or recreated underneath it. */
-    private fun cancelLayoutAnimator() {
-        layoutAnimator?.cancel()
-        layoutAnimator = null
-        layoutTarget = null
+    /** The anchor to lay out from: the user's, clamped, or the keyboard's default. */
+    private fun resolvedAnchor(pillWidthPx: Int, pillHeightPx: Int): OverlayMetrics.Anchor {
+        val (screenWidthPx, screenHeightPx) = screenSize()
+        val stored = anchor
+        return if (stored == null) {
+            OverlayMetrics.defaultAnchor(
+                screenWidthPx = screenWidthPx,
+                screenHeightPx = screenHeightPx,
+                keyboardHeightPx = keyboardHeightPx,
+                pillWidthPx = pillWidthPx,
+                pillHeightPx = pillHeightPx,
+                density = density,
+            )
+        } else {
+            OverlayMetrics.clampAnchor(
+                anchor = stored,
+                screenWidthPx = screenWidthPx,
+                screenHeightPx = screenHeightPx,
+                keyboardHeightPx = keyboardHeightPx,
+                pillWidthPx = pillWidthPx,
+                pillHeightPx = pillHeightPx,
+                density = density,
+            )
+        }
     }
 
-    private fun animateIn(target: ComposeView) {
+    /**
+     * Drag plumbing: the window's top-left *is* the drag's coordinate, and the anchor is derived from
+     * it rather than the other way round.
+     *
+     * Going through the anchor on every move is what makes the clamped edges behave — the orb stops at
+     * the screen edge or the keyboard's top and resumes following the finger the instant it comes
+     * back, because the next move is measured from where the finger went down, not from the last place
+     * the orb was allowed to be.
+     */
+    private val dragCallbacks = object : OverlayDragHost.Callbacks {
+
+        override fun windowTopLeft(): Pair<Int, Int> =
+            params?.let { it.x to it.y } ?: (0 to 0)
+
+        override fun moveWindowTo(x: Int, y: Int) {
+            val pill = currentPillPx()
+            val padding = dp(OverlayMetrics.SHADOW_PADDING_DP)
+            val (screenWidthPx, screenHeightPx) = screenSize()
+            anchor = OverlayMetrics.clampAnchor(
+                anchor = OverlayMetrics.Anchor(
+                    rightPx = x + pill.first + padding,
+                    topPx = y + padding,
+                ),
+                screenWidthPx = screenWidthPx,
+                screenHeightPx = screenHeightPx,
+                keyboardHeightPx = keyboardHeightPx,
+                pillWidthPx = pill.first,
+                pillHeightPx = pill.second,
+                density = density,
+            )
+            applyLayout()
+        }
+
+        override fun onPressChanged(pressedNow: Boolean) {
+            pressed.value = pressedNow
+        }
+
+        override fun onDragStarted() {
+            dragging.value = true
+        }
+
+        override fun onDragEnded() {
+            dragging.value = false
+            val dropped = anchor ?: return
+            onAnchorChanged(dropped.rightPx, dropped.topPx)
+        }
+
+        // Qualified on purpose: `onTap()` inside this object resolves to *this* override, so an
+        // unqualified call would be an infinite recursion rather than a forwarded tap.
+        override fun onTap(): Unit = this@OverlayController.onTap()
+
+        override fun onLongPress(): Unit = onRetype()
+    }
+
+    private fun animateIn(target: OverlayDragHost) {
         target.alpha = 0f
         target.scaleX = IN_START_SCALE
         target.scaleY = IN_START_SCALE
@@ -433,7 +502,7 @@ class OverlayController(
             .start()
     }
 
-    private fun animateOut(target: ComposeView, onEnd: () -> Unit) {
+    private fun animateOut(target: OverlayDragHost, onEnd: () -> Unit) {
         target.animate()
             .alpha(0f)
             .scaleX(OUT_END_SCALE)
@@ -463,8 +532,6 @@ class OverlayController(
         private const val HIDE_DURATION_MS = 150L
         private const val REMOVE_DELAY_MS = 160L
 
-        /** How long the window takes to become the next state's rectangle. */
-        private const val MORPH_DURATION_MS = 190L
         private const val IN_START_SCALE = 0.72f
         private const val OUT_END_SCALE = 0.86f
 

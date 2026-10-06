@@ -38,6 +38,14 @@ data class TyporbSettings(
     val overlayCornerRadiusDp: Int = DEFAULT_OVERLAY_CORNER_DP,
     /** Edge length of the idle orb, adjustable from Settings. */
     val overlaySizeDp: Int = DEFAULT_OVERLAY_SIZE_DP,
+    /**
+     * Where the user last dropped the orb, in screen pixels, or `null` while it has never been moved.
+     *
+     * Null is not "missing data": it means the orb belongs where the keyboard puts it, 16dp up from
+     * the keyboard's top edge. Only a deliberate drag turns that into a fixed position the user owns.
+     */
+    val overlayAnchorRightPx: Int? = null,
+    val overlayAnchorTopPx: Int? = null,
     /** Master switch for the tick/confirm/reject haptic pulses. */
     val hapticsEnabled: Boolean = true,
     /** Whether the recording capsule draws the live amplitude bars. */
@@ -52,6 +60,14 @@ data class TyporbSettings(
         const val MAX_OVERLAY_SIZE_DP = 64
     }
     val hasApiKey: Boolean get() = apiKey.isNotBlank()
+
+    /** The orb's top-right corner in px, or `null` for the keyboard-relative default position. */
+    val overlayAnchor: Pair<Int, Int>?
+        get() {
+            val right = overlayAnchorRightPx ?: return null
+            val top = overlayAnchorTopPx ?: return null
+            return right to top
+        }
 
     /** Cloud mode without a key would fail on every dictation, so the UI pre-emptively warns. */
     val isCloudConfigured: Boolean get() = engine != ProcessingEngine.CLOUD || hasApiKey
@@ -138,6 +154,23 @@ class SettingsRepository(context: Context) {
         plainPrefs.edit().putBoolean(KEY_WAVEFORM, enabled).apply()
     }
 
+    /**
+     * Remembers where the user dropped the orb.
+     *
+     * Written on drag *end* rather than on every frame of the move: a SharedPreferences commit per
+     * frame would be disk traffic in the middle of a gesture. Passing `null` for either value clears
+     * the position and returns the orb to the keyboard's default.
+     */
+    fun setOverlayAnchor(rightPx: Int?, topPx: Int?) {
+        val editor = plainPrefs.edit()
+        if (rightPx == null || topPx == null) {
+            editor.remove(KEY_OVERLAY_ANCHOR_RIGHT).remove(KEY_OVERLAY_ANCHOR_TOP)
+        } else {
+            editor.putInt(KEY_OVERLAY_ANCHOR_RIGHT, rightPx).putInt(KEY_OVERLAY_ANCHOR_TOP, topPx)
+        }
+        editor.apply()
+    }
+
     /** Stores the API key encrypted. Passing a blank key clears the credential. */
     fun setApiKey(apiKey: String) {
         val trimmed = apiKey.trim()
@@ -174,6 +207,17 @@ class SettingsRepository(context: Context) {
                 KEY_OVERLAY_SIZE,
                 TyporbSettings.DEFAULT_OVERLAY_SIZE_DP,
             ),
+            // Absence is meaningful here, so it is read as absence instead of as a sentinel pixel.
+            overlayAnchorRightPx = if (plainPrefs.contains(KEY_OVERLAY_ANCHOR_RIGHT)) {
+                plainPrefs.getInt(KEY_OVERLAY_ANCHOR_RIGHT, 0)
+            } else {
+                null
+            },
+            overlayAnchorTopPx = if (plainPrefs.contains(KEY_OVERLAY_ANCHOR_TOP)) {
+                plainPrefs.getInt(KEY_OVERLAY_ANCHOR_TOP, 0)
+            } else {
+                null
+            },
             hapticsEnabled = plainPrefs.getBoolean(KEY_HAPTICS, true),
             waveformEnabled = plainPrefs.getBoolean(KEY_WAVEFORM, true),
         )
@@ -191,6 +235,8 @@ class SettingsRepository(context: Context) {
         const val KEY_ONBOARDING = "onboarding_complete"
         const val KEY_OVERLAY_CORNER = "overlay_corner_radius"
         const val KEY_OVERLAY_SIZE = "overlay_size"
+        const val KEY_OVERLAY_ANCHOR_RIGHT = "overlay_anchor_right"
+        const val KEY_OVERLAY_ANCHOR_TOP = "overlay_anchor_top"
         const val KEY_HAPTICS = "haptics_enabled"
         const val KEY_WAVEFORM = "waveform_enabled"
     }

@@ -12,11 +12,17 @@
 
   `flagRetrieveInteractiveWindows` is what lets `getWindows()` include the keyboard window, and
   `canRetrieveWindowContent` is required to read the focused field at all.
+
+  `flagInputMethodEditor` is what lets the service commit text through the platform's own input
+  connection on Android 13+ — the same route a keyboard uses, and the only way to type into a field
+  that refuses `ACTION_SET_TEXT` and `ACTION_PASTE` alike. The attribute is resolved to its integer at
+  build time, so on Android 12 and older (this app's minimum is 26, and the phone it targets is 11) it
+  is a flag bit nothing reads, and Typorb's node routes are unaffected.
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeViewFocused|typeViewClicked|typeViewTextChanged|typeWindowStateChanged|typeWindowsChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags="flagDefault|flagReportViewIds|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews"
+    android:accessibilityFlags="flagDefault|flagReportViewIds|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews|flagInputMethodEditor"
     android:canRetrieveWindowContent="true"
     android:description="@string/accessibility_service_description"
     android:notificationTimeout="50"
