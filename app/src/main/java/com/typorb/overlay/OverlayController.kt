@@ -219,6 +219,16 @@ class OverlayController(
         }
 
         val dragHost = OverlayDragHost(appContext, dragCallbacks).apply {
+            // Compose finds the window's owners from the *root* view, not from the ComposeView.
+            // getWindowRecomposer() walks up looking for the android.R.id.content frame — which an
+            // overlay window does not have — so it lands on this view and installs the recomposer
+            // here, then resolves ViewTreeLifecycleOwner from here. Setting the owners only on the
+            // ComposeView (which was the root before the drag host existed) made that lookup return
+            // null and throw IllegalStateException("ViewTreeLifecycleOwner not found from …") on
+            // attach. Both views carry all three owners, so no lookup in the chain can miss.
+            setViewTreeLifecycleOwner(lifecycleOwner)
+            setViewTreeSavedStateRegistryOwner(stateOwner)
+            setViewTreeViewModelStoreOwner(stateOwner)
             addView(
                 composeView,
                 FrameLayout.LayoutParams(
