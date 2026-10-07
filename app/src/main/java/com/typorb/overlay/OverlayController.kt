@@ -51,6 +51,12 @@ import kotlinx.coroutines.flow.StateFlow
  * The window is `box + SHADOW_PADDING_DP` on each side so the soft shadow has somewhere to fall, and
  * its right and top edges are pinned to the [OverlayMetrics.Anchor] — the pill's top-right corner.
  *
+ * Those two writers are the only ones, and they never run together: a drag's own writes are
+ * **coalesced to one per frame** ([flushPendingMove]), with the newest position winning, because a
+ * burst of stale move events each being written in turn is what made a fast drag stall. While a
+ * finger is down [isGesturing] is set, and the service keeps its accessibility lookups — which are
+ * binder round trips on this same thread — off the gesture entirely.
+ *
  * ## Who owns the position
  *
  * The user, once they have dragged it. A drag writes the new corner into Settings through
@@ -144,6 +150,43 @@ class OverlayController(
     private val pressed: MutableState<Boolean> = mutableStateOf(false)
     private val dragging: MutableState<Boolean> = mutableStateOf(false)
 
+    /**
+     * The position the finger is asking for, waiting for the next frame to be written.
+     *
+     * ## Why a drag does not write the window per event
+     *
+     * A finger that moves quickly produces more `ACTION_MOVE` events than there are frames, and the
+     * platform delivers them in bursts — and every one of them used to end in its own
+     * `updateViewLayout`, which is a binder round trip through the window manager (and a relayout of
+     * the window in it). Once that work takes longer than the finger takes to move, the backlog feeds
+     * itself: the queue of stale move events grows, each one is a transaction the orb does not need,
+     * and the orb visibly *stalls* and then jumps — the "it gets stuck in the middle when I drag it
+     * fast" report, exactly.
+     *
+     * So a move is not a write any more, it is a **destination**. Many events inside one frame
+     * collapse into the last one, one frame writes the window once, and the position written is always
+     * the newest the user asked for — never a replayed intermediate that the finger has already left.
+     * There is no added latency either: a window position only reaches the screen at a frame boundary,
+     * so a write at the next frame shows up exactly when a write on the event would have.
+     */
+    private var pendingMove: Pair<Int, Int>? = null
+
+    /** A frame has been booked to write [pendingMove]; see [flushPendingMove]. */
+    private var pendingMoveScheduled = false
+
+    private val flushMove = Runnable { flushPendingMove() }
+
+    /**
+     * Whether a finger is on the orb right now.
+     *
+     * Read by [com.typorb.service.TyporbAccessibilityService] to keep its own accessibility lookups
+     * off the main thread for the duration of the gesture: those queries are binder round trips of
+     * their own, and one landing mid-drag is a dropped frame the user sees as a stutter.
+     */
+    @Volatile
+    var isGesturing: Boolean = false
+        private set
+
     /** Set by [useFallbackWindowTypeNext] when the preferred type has just been lost on this device. */
     private var preferFallbackWindowType = false
 
@@ -204,6 +247,9 @@ class OverlayController(
             applyLayout()
             return true
         }
+        // Anything a gesture left queued belongs to a window that is about to stop existing.
+        pendingMove = null
+        pendingMoveScheduled = false
         removePending?.let { mainHandler.removeCallbacks(it) }
         removePending = null
         shrinkPending?.let { mainHandler.removeCallbacks(it) }
@@ -274,11 +320,15 @@ class OverlayController(
         // Preferred type first, then the grant-gated fallback. Both are attempted rather than
         // choosing up front, because which one the platform will accept is only knowable by trying:
         // an OEM build can reject the accessibility type outright.
+        // The tile the user has configured, so the very first frame is already the right size and the
+        // orb does not visibly settle a beat after it appears. The composition's own report replaces
+        // this immediately; it exists only so nothing has to be resized before the first draw.
+        val tilePx = dp(settings.value.overlaySizeDp)
         var failure: Throwable? = null
         for (type in candidateWindowTypes()) {
             val layoutParams = WindowManager.LayoutParams(
-                dp(OverlayMetrics.PILL_HEIGHT_DP) + padding * 2,
-                dp(OverlayMetrics.PILL_HEIGHT_DP) + padding * 2,
+                tilePx + padding * 2,
+                tilePx + padding * 2,
                 type,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
@@ -357,6 +407,9 @@ class OverlayController(
     fun hide() {
         val dragHost = host ?: return
         dragHost.cancelGesture()
+        pendingMove = null
+        pendingMoveScheduled = false
+        isGesturing = false
         shrinkPending?.let { mainHandler.removeCallbacks(it) }
         shrinkPending = null
         windowTypeInUse = null
@@ -394,6 +447,9 @@ class OverlayController(
         removePending = null
         shrinkPending?.let { mainHandler.removeCallbacks(it) }
         shrinkPending = null
+        pendingMove = null
+        pendingMoveScheduled = false
+        isGesturing = false
         val dragHost = host
         host = null
         params = null
@@ -447,7 +503,22 @@ class OverlayController(
     private fun applyLayout() {
         val layoutParams = params ?: return
         val pill = currentPillPx()
-        val anchor = resolvedAnchor(pill.first, pill.second)
+        writeWindow(layoutParams, resolvedAnchor(pill.first, pill.second), pill)
+    }
+
+    /**
+     * Writes the window rectangle for [pill] anchored at [anchor].
+     *
+     * The single place the window's rectangle is ever written: the state path via [applyLayout], and
+     * the drag path via [flushPendingMove], which has already clamped its own anchor and must not be
+     * clamped twice — [applyLayout] would re-derive the position from the anchor it just stored, and
+     * a second clamp is arithmetic a drag does not need sixty times a second.
+     */
+    private fun writeWindow(
+        layoutParams: WindowManager.LayoutParams,
+        anchor: OverlayMetrics.Anchor,
+        pill: Pair<Int, Int>,
+    ) {
         val target = OverlayMetrics.windowFor(
             anchor = anchor,
             pillWidthPx = pill.first,
@@ -523,35 +594,43 @@ class OverlayController(
      * Drag plumbing: the window's top-left *is* the drag's coordinate, and the anchor is derived from
      * it rather than the other way round.
      *
-     * Going through the anchor on every move is what makes the clamped edges behave — the orb stops at
-     * the screen edge or the keyboard's top and resumes following the finger the instant it comes
-     * back, because the next move is measured from where the finger went down, not from the last place
-     * the orb was allowed to be.
+     * Going through the anchor is what makes the clamped edges behave — the orb stops at the screen
+     * edge and resumes following the finger the instant it comes back, because every move is measured
+     * from where the finger went down, not from the last place the orb was allowed to be.
      */
     private val dragCallbacks = object : OverlayDragHost.Callbacks {
 
         override fun windowTopLeft(): Pair<Int, Int> =
             params?.let { it.x to it.y } ?: (0 to 0)
 
+        /**
+         * Records where the finger is and books one window write for the next frame.
+         *
+         * Everything the write needs is resolved in [flushPendingMove], from the *newest* position:
+         * doing any of it here would mean doing it once per move event, which is the cost this exists
+         * to avoid.
+         */
         override fun moveWindowTo(x: Int, y: Int) {
-            val pill = currentPillPx()
-            val padding = dp(OverlayMetrics.SHADOW_PADDING_DP)
-            val (screenWidthPx, screenHeightPx) = screenSize()
-            anchor = OverlayMetrics.clampAnchor(
-                anchor = OverlayMetrics.Anchor(
-                    rightPx = x + pill.first + padding,
-                    topPx = y + padding,
-                ),
-                screenWidthPx = screenWidthPx,
-                screenHeightPx = screenHeightPx,
-                pillWidthPx = pill.first,
-                pillHeightPx = pill.second,
-                density = density,
-            )
-            applyLayout()
+            pendingMove = x to y
+            val view = host
+            if (view == null || !view.isAttachedToWindow) {
+                // No frame will be delivered — the window is on its way out. Write it now rather than
+                // drop it, so nothing is left half-applied on the way to the destroy path.
+                flushPendingMove()
+                return
+            }
+            if (pendingMoveScheduled) return
+            pendingMoveScheduled = true
+            // `postOnAnimation` is `void` in the public SDK and always runs: on an attached view it
+            // goes to the frame handler, and on a detached one the view queues it until it is
+            // attached — which is why the flag it sets is also cleared at the start of every new
+            // gesture, so no gesture can ever inherit a booking the last one did not use.
+            view.postOnAnimation(flushMove)
         }
 
         override fun onPressChanged(pressedNow: Boolean) {
+            isGesturing = pressedNow
+            if (pressedNow) pendingMoveScheduled = false
             pressed.value = pressedNow
         }
 
@@ -560,7 +639,11 @@ class OverlayController(
         }
 
         override fun onDragEnded() {
+            // A drag's last movement must not be left waiting for a frame that may never be booked:
+            // the drop position is the one that gets saved, so it is written, not deferred.
+            flushPendingMove()
             dragging.value = false
+            isGesturing = false
             val dropped = anchor ?: return
             onAnchorChanged(dropped.rightPx, dropped.topPx)
         }
@@ -602,6 +685,36 @@ class OverlayController(
             .setInterpolator(ANIMATION_INTERPOLATOR)
             .withEndAction(onEnd)
             .start()
+    }
+
+    /**
+     * Writes the one window rectangle a drag frame is allowed, using the newest position.
+     *
+     * Also the address the gesture ends at: it is idempotent, so calling it with nothing pending —
+     * which is what happens on a drop after the frame already ran — is a no-op rather than a
+     * duplicate write.
+     */
+    private fun flushPendingMove() {
+        pendingMoveScheduled = false
+        val (x, y) = pendingMove ?: return
+        pendingMove = null
+        val layoutParams = params ?: return
+        val pill = currentPillPx()
+        val padding = dp(OverlayMetrics.SHADOW_PADDING_DP)
+        val (screenWidthPx, screenHeightPx) = screenSize()
+        val clamped = OverlayMetrics.clampAnchor(
+            anchor = OverlayMetrics.Anchor(
+                rightPx = x + pill.first + padding,
+                topPx = y + padding,
+            ),
+            screenWidthPx = screenWidthPx,
+            screenHeightPx = screenHeightPx,
+            pillWidthPx = pill.first,
+            pillHeightPx = pill.second,
+            density = density,
+        )
+        anchor = clamped
+        writeWindow(layoutParams, clamped, pill)
     }
 
     private fun dp(value: Int): Int = OverlayMetrics.dp(value, density)

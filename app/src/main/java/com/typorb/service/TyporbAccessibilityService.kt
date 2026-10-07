@@ -323,6 +323,16 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
      */
     private fun evaluateOverlayVisibility(armWatch: Boolean) {
         if (!::overlay.isInitialized) return
+        // A finger on the orb owns the main thread. Everything below this line is at least one binder
+        // round trip — `findFocus`, `getWindows`, the window metrics — and one of those landing on a
+        // drag frame is exactly the "it gets stuck in the middle when I move it fast" the user feels,
+        // because a drag frame is a window-manager transaction on the same thread.
+        //
+        // Nothing is lost by waiting: the decision this makes is about a keyboard, a keyboard does not
+        // appear or vanish while a finger is dragging an orb, and the gesture is over in well under a
+        // second. `lastEvaluationMs` is deliberately not stamped either, so the very next event — or
+        // the next watchdog tick, whichever lands first after the finger lifts — evaluates normally.
+        if (overlay.isGesturing) return
         val now = System.currentTimeMillis()
         if (now - lastEvaluationMs < EVALUATION_THROTTLE_MS) return
         lastEvaluationMs = now
@@ -470,6 +480,13 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
      *
      * 600 ms is invisible next to the keyboard's own show animation while costing one window query
      * plus one focus query per tick, and it is skipped entirely while the screen is off.
+     *
+     * **It is also skipped while a finger is on the orb.** A tick is a pair of accessibility queries
+     * on the main thread — the same thread that has to hand the drag's next position to the window
+     * manager — and on a budget device one of those queries takes long enough to be a dropped drag
+     * frame. The result was a stutter arriving punctually every 600 ms, which is precisely how the
+     * user described it: not slow, but *getting stuck in between*. See
+     * [OverlayController.isGesturing].
      */
     private fun startWatchdog() {
         if (watchdogJob?.isActive == true) return
@@ -477,6 +494,7 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
             while (isActive) {
                 delay(WATCHDOG_INTERVAL_MS)
                 if (!isScreenOn()) continue
+                if (::overlay.isInitialized && overlay.isGesturing) continue
                 watchdogTicks++
                 val imeState = applyOverlayState(checkWindowLiveness = true)
                 if (imeState.visible) watchdogKeyboardTicks++

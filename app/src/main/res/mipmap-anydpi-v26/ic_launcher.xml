@@ -1,6 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive launcher icon, built from the icon pack shipped in the repository root.
+
+  The pack's own foreground is a full-bleed plate, so the pieces come from it verbatim: the
+  density-bucketed `ic_launcher_foreground.png` files (drawn by the pack at 108dp, i.e. the adaptive
+  canvas) over a flat background colour that matches the plate's own edge. Nothing here is scaled,
+  cropped or letterboxed by hand — an adaptive icon is masked by the launcher across its whole
+  108x108 canvas, and re-centring the artwork inside a smaller safe zone would shrink it for no
+  reason.
+
+  `monochrome` is kept (the pack omits it): on Android 13+ the launcher can tint a themed icon, and
+  without this line Typorb would be the one app in the drawer that cannot be themed.
+-->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/ic_launcher_background" />
-    <foreground android:drawable="@drawable/ic_launcher_foreground" />
-    <monochrome android:drawable="@drawable/ic_launcher_foreground" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+    <monochrome android:drawable="@mipmap/ic_launcher_foreground" />
 </adaptive-icon>

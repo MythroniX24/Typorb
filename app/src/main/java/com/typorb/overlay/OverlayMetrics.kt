@@ -4,7 +4,7 @@ import com.typorb.model.OverlayUiState
 import com.typorb.service.KeyboardGeometry
 
 /**
- * The pill's own size per state, and the overlay window bounds that follow from it.
+ * The orb's own size per state, and the overlay window bounds that follow from it.
  *
  * Pure — no Android types — for two reasons. The window is sized *outside* Compose, so a state change
  * has to move a real `WindowManager.LayoutParams`, and that is exactly the kind of arithmetic that
@@ -12,13 +12,23 @@ import com.typorb.service.KeyboardGeometry
  * on, so they are asserted on the JVM instead of only being discovered by dragging an orb off the
  * screen on a phone.
  *
+ * ## The shape: a tile, plus a panel that slides out of it
+ *
+ * The orb is a **square tile carrying the app's icon**, and that tile never changes size, never
+ * changes position and never changes shape. A state that has something to show — a live waveform, a
+ * failure message — grows a **panel out to the left of the tile**, and the tile itself stays exactly
+ * where the user left it. Collapsing puts the panel away and leaves the tile on its own again.
+ *
+ * That is why every size below is expressed as "the tile, plus this much panel beside it": the tile's
+ * edge is the fixed point of the whole layout, and the panel is the only thing that ever moves.
+ *
  * ## The anchor
  *
- * Everything here is expressed as a [Anchor]: the pill's **top-right corner in screen pixels**. That
- * one point is enough because the pill is drawn right-aligned — idle it sits against the right edge,
- * and a capsule grows leftwards from that same corner without the right edge moving. It is also the
- * point a drag holds on to: the user moves the orb, the anchor moves, and every later state change
- * keeps the corner the user chose instead of snapping back to the default.
+ * Everything here is expressed as a [Anchor]: the **tile's top-right corner in screen pixels**. That
+ * one point is enough because the tile is drawn right-aligned — the panel grows leftwards from that
+ * same corner without the right edge moving. It is also the point a drag holds on to: the user moves
+ * the orb, the anchor moves, and every later state change keeps the corner the user chose instead of
+ * snapping back to the default.
  *
  * The window is deliberately larger than the pill by [SHADOW_PADDING_DP] on every side: a window
  * surface is clipped to its own bounds, so a pill-sized window would cut the soft ambient shadow off
@@ -26,8 +36,30 @@ import com.typorb.service.KeyboardGeometry
  */
 object OverlayMetrics {
 
-    /** Height of every capsule state; the idle orb is square. */
-    const val PILL_HEIGHT_DP = 48
+    /**
+     * Gap between the tile and the panel beside it.
+     *
+     * Not decoration: the two are separate surfaces — a photographic tile and a glass panel — and
+     * running them edge to edge would read as one badly-joined shape. The gap is also what makes the
+     * panel *slide out* rather than inflate the tile: the first [PANEL_GAP_DP] of the expansion
+     * animation is spent opening this gap.
+     */
+    const val PANEL_GAP_DP = 6
+
+    /** Width of the recording panel: enough for the waveform to actually move. */
+    const val WAVE_PANEL_DP = 104
+
+    /** Narrowest failure panel; the message widens it from here — see [errorPanelWidthDp]. */
+    const val ERROR_PANEL_DP = 168
+
+    /**
+     * Widest failure panel.
+     *
+     * The whole pill is this plus the gap and the tile — 266 + 6 + 48 = 320dp — which is the widest
+     * capsule that still leaves the standard 16dp margin on a 360dp screen. See
+     * [OverlayMetricsTest] for the arithmetic.
+     */
+    const val MAX_ERROR_PANEL_DP = 266
 
     /**
      * Inflates the overlay window beyond the pill on every side.
@@ -37,15 +69,6 @@ object OverlayMetrics {
      * into at all.
      */
     const val SHADOW_PADDING_DP = 14
-
-    const val RECORDING_WIDTH_DP = 160
-    const val PROCESSING_WIDTH_DP = 190
-
-    /** Narrowest failure capsule; the message widens it from here — see [errorWidthDp]. */
-    const val ERROR_WIDTH_DP = 220
-
-    /** Widest failure capsule, leaving the standard 16dp margin on a 360dp-wide screen. */
-    const val MAX_ERROR_WIDTH_DP = 320
 
     /**
      * How long the pill takes to change size, in ms.
@@ -58,31 +81,45 @@ object OverlayMetrics {
      */
     const val MORPH_MS = 240
 
-    /** Rough advance width of one character of the 13sp capsule label, in dp. */
+    /** Rough advance width of one character of the 13sp panel label, in dp. */
     private const val CHARACTER_WIDTH_DP = 6.6f
 
-    /** Dot, spacer and the capsule's own horizontal padding, in dp. */
+    /** Dot, spacer and the panel's own horizontal padding, in dp. */
     private const val ERROR_CHROME_DP = 52f
 
-    /** Pill size in dp for [state]; only [OverlayUiState.Idle] is user-resizable. */
-    fun pillSizeDp(state: OverlayUiState, idleSizeDp: Int): Pair<Int, Int> = when (state) {
-        is OverlayUiState.Idle -> idleSizeDp to idleSizeDp
-        is OverlayUiState.Recording -> RECORDING_WIDTH_DP to PILL_HEIGHT_DP
-        is OverlayUiState.Processing -> PROCESSING_WIDTH_DP to PILL_HEIGHT_DP
-        is OverlayUiState.Failed -> errorWidthDp(state.message) to PILL_HEIGHT_DP
+    /**
+     * The whole pill's size in dp for [state].
+     *
+     * [orbSizeDp] is the user's own tile size, so the recorder panel keeps its width while the tile
+     * grows around it — the panel is a fixed piece of glass, and only the tile is a preference.
+     */
+    fun pillSizeDp(state: OverlayUiState, orbSizeDp: Int): Pair<Int, Int> = when (state) {
+        is OverlayUiState.Idle -> orbSizeDp to orbSizeDp
+        // Recording and Failed are "a panel beside the tile"; Processing is not, on purpose — see
+        // the KDoc on the state itself. Collapsing on the second tap is the behaviour the orb is
+        // asked for, and the tile's own ring is what says the app is still working.
+        is OverlayUiState.Recording ->
+            orbSizeDp + PANEL_GAP_DP + WAVE_PANEL_DP to orbSizeDp
+        is OverlayUiState.Processing -> orbSizeDp to orbSizeDp
+        is OverlayUiState.Failed ->
+            orbSizeDp + PANEL_GAP_DP + errorPanelWidthDp(state.message) to orbSizeDp
     }
 
+    /** How much panel sits beside the tile in [state], gap included. `0` when there is none. */
+    fun panelWidthDp(state: OverlayUiState, orbSizeDp: Int): Int =
+        pillSizeDp(state, orbSizeDp).first - orbSizeDp
+
     /**
-     * Width a failure capsule needs to show [message] on one line, clamped to a sane range.
+     * Width a failure panel needs to show [message] on one line, clamped to a sane range.
      *
      * A fixed width was actively harmful here: the failure text is the only thing a user gets to read
      * when a dictation does not land, and errors such as Groq's own messages are far longer than the
-     * 220dp that used to be hard-coded — they were cut off mid-sentence, which reads as a broken UI.
+     * old hard-coded width — they were cut off mid-sentence, which reads as a broken UI.
      */
-    fun errorWidthDp(message: String): Int =
+    fun errorPanelWidthDp(message: String): Int =
         (message.length * CHARACTER_WIDTH_DP + ERROR_CHROME_DP)
             .toInt()
-            .coerceIn(ERROR_WIDTH_DP, MAX_ERROR_WIDTH_DP)
+            .coerceIn(ERROR_PANEL_DP, MAX_ERROR_PANEL_DP)
 
     /**
      * The smallest box that holds both pill sizes.
@@ -97,14 +134,14 @@ object OverlayMetrics {
     fun hull(a: Pair<Int, Int>, b: Pair<Int, Int>): Pair<Int, Int> =
         maxOf(a.first, b.first) to maxOf(a.second, b.second)
 
-    /** The pill's top-right corner, in screen pixels. */
+    /** The tile's top-right corner, in screen pixels. */
     data class Anchor(val rightPx: Int, val topPx: Int)
 
     /** A rectangle for the overlay window: pill plus shadow padding, positioned on screen. */
     data class Window(val width: Int, val height: Int, val x: Int, val y: Int)
 
     /**
-     * Where the pill belongs when the user has not moved it: pinned to the right edge and exactly
+     * Where the orb belongs when the user has not moved it: pinned to the right edge and exactly
      * [KeyboardGeometry.MARGIN_DP] above the keyboard.
      *
      * [pillWidthPx] and [pillHeightPx] are the *animated* pill's dimensions, so the default anchor is

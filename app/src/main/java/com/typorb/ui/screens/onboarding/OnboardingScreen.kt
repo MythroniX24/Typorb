@@ -6,7 +6,9 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,7 +27,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Accessibility
-import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Widgets
 import androidx.compose.material3.Icon
@@ -37,10 +38,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.typorb.R
 import com.typorb.ui.PermissionStatus
 import com.typorb.ui.PermissionTarget
 import com.typorb.ui.components.ElevatedCard
@@ -200,7 +204,14 @@ private fun GateRow(
     }
 }
 
-/** The brand mark: an indigo orb with a soft pulsing halo. */
+/**
+ * The brand mark: the orb itself, with a soft pulsing halo.
+ *
+ * It is drawn from the same `orb_icon` drawable the floating orb is, on purpose. This is the first
+ * thing a new user sees and the only picture of the product they get before granting permissions, so
+ * it has to be the object they are going to meet over their keyboard — not a lookalike that leaves
+ * them wondering whether the thing that appeared is Typorb.
+ */
 @Composable
 private fun PulsingOrb() {
     val transition = rememberInfiniteTransition(label = "onboarding-orb")
@@ -221,20 +232,15 @@ private fun PulsingOrb() {
                 .clip(CircleShape)
                 .background(TyporbGradients.halo()),
         )
-        Box(
+        Image(
+            painter = painterResource(R.drawable.orb_icon),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
             modifier = Modifier
                 .size(66.dp)
                 .scale(pulse)
                 .clip(TyporbShapes.Large)
-                .background(TyporbGradients.AccentHorizontal),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.GraphicEq,
-                contentDescription = null,
-                tint = TyporbPalette.OnAccent,
-                modifier = Modifier.size(30.dp),
-            )
-        }
+                .border(1.dp, TyporbPalette.Border, TyporbShapes.Large),
+        )
     }
 }

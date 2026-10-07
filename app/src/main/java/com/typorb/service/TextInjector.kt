@@ -39,6 +39,16 @@ import kotlinx.coroutines.withContext
  *    password, is not the user's content at all. A rebuild now only happens for a field whose contents
  *    were **proven** by a refresh; otherwise the route used is paste, which inserts at the field's own
  *    caret and is structurally incapable of inventing or deleting text.
+ *
+ *    **And that proof was written too strictly, which switched the route off where it matters most.**
+ *    `AccessibilityNodeInfo.getText()` returns `null` for a field that holds *nothing* — a fresh chat
+ *    box, an empty search field, a note before the first word — and that was being read as "this field
+ *    will not tell me what it holds". So on the one field this app is used in most, the strongest
+ *    route was skipped outright ("field content unreadable, rebuild skipped") and a dictation had to
+ *    get in through the clipboard instead. The two answers are opposite, not equal: an *empty* field is
+ *    the safest thing in the world to build a transcript into, because joining `""` with the
+ *    transcript is the transcript. See [readContent]. A password field is the one case that really
+ *    cannot be read, and keeps the insertive routes only.
  * 3. **The target was chosen before the dictation, and never re-checked.** A node picked up seconds
  *    ago can be stale by the time the words are ready — a recycled editor still answers questions and
  *    silently discards writes. The field is now resolved at commit time from the system's own input
@@ -60,11 +70,13 @@ import kotlinx.coroutines.withContext
  * second write on top of one the field will not confirm is how a dictation lands twice, and twice is
  * worse than a sentence left on the clipboard for the user to paste.
  *
- * The route ladder, in order:
+ * The route ladder, in order. It stops at the first route that lands; a route that reports a write it
+ * will not confirm is remembered (so the ladder is never run twice, and the words are never reported
+ * as simply lost) but the routes below it still get their turn — see [runLadder]:
  *  1. **The platform's own input connection** on Android 13+ ([commitViaInputMethod]) — the same
  *     `commitText` a keyboard uses, straight into the field at the caret.
- *  2. **`ACTION_SET_TEXT`** — only when the field's current content could be read. Appends rather
- *     than overwrites, and is verified.
+ *  2. **`ACTION_SET_TEXT`** — only when the field's current content could be read, which includes the
+ *     proof that it is empty. Appends rather than overwrites, and is verified.
  *  3. **`ACTION_PASTE`** from the clipboard — inserts at the caret, never reads what is already there.
  *  4. **`ACTION_FOCUS` then repeat**, for fields that refuse anything until they hold focus
  *     themselves. WhatsApp's message box behaves exactly this way.
@@ -157,12 +169,26 @@ class TextInjector(private val service: AccessibilityService) {
     private data class Target(
         /** The field to write into. */
         val node: AccessibilityNodeInfo,
-        /** The field's current content, or `null` when it could not be proven. */
+        /** The field's current content — `""` when it is empty — or `null` when it could not be read. */
         val text: String?,
         /** Human-readable: which field, and which lookup produced it. */
         val description: String,
+        /**
+         * A password field: it never reports its own contents, so it can never be proven empty either.
+         *
+         * The distinction matters because a rebuild would throw away characters the user typed into
+         * it, and a dictation into a password box is far more likely to be a slip than an intention.
+         * Password fields therefore keep the insertive routes and nothing else.
+         */
+        val password: Boolean = false,
     ) {
-        /** `true` when a rebuild of the whole field is safe because its content was actually read. */
+        /**
+         * `true` when a rebuild of the whole field is safe because its content was actually read.
+         *
+         * An empty field counts, and it is the common case: `""` is a *reading*, not the absence of
+         * one — see [readContent] — and building a transcript into an empty field is exactly what a
+         * dictation is for.
+         */
         val contentProven: Boolean get() = text != null
     }
 
@@ -314,8 +340,29 @@ class TextInjector(private val service: AccessibilityService) {
             "${describe(node)} · captured at tap time"
         }
         val current = runCatching { node.refresh() }.getOrDefault(false)
-        val text = if (current) readText(node)?.let { dropHint(node, it) } else null
-        return Target(node = node, text = text, description = description)
+        val password = runCatching { node.isPassword }.getOrDefault(false)
+        val text = if (current && !password) readContent(node) else null
+        return Target(node = node, text = text, description = description, password = password)
+    }
+
+    /**
+     * What a field holds right now, where `""` means empty and `null` means the field would not answer.
+     *
+     * **The difference between those two is the difference between a dictation that lands and one that
+     * does not.** `AccessibilityNodeInfo.getText()` is documented to return `null` for a field with no
+     * text — it is the empty string for this purpose, not a refusal — and treating it as unreadable is
+     * what removed the `ACTION_SET_TEXT` route from a fresh chat box, an empty search field, or a note
+     * the user has not started typing in: the fields Typorb is opened on. Joining `""` with the
+     * transcript produces the bare transcript, so a field proven empty is the *safest* rebuild there is.
+     *
+     * The one answer that is genuinely unreadable is the field throwing on `.text`, which means the node
+     * itself is gone; that still returns `null`, and nothing is rebuilt from it. A hint published as the
+     * field's own text is emptiness too (see [dropHint]) — and it is emptiness that used to disable the
+     * rebuild as well.
+     */
+    private fun readContent(node: AccessibilityNodeInfo): String? {
+        val raw = runCatching { node.text }.getOrElse { return null }
+        return dropHint(node, raw?.toString().orEmpty()).orEmpty()
     }
 
     /** `true` when the node is still backed by a live window, i.e. a write to it can land. */
@@ -422,6 +469,18 @@ class TextInjector(private val service: AccessibilityService) {
         content: String,
         attempts: MutableList<String>,
     ): RouteResult {
+        // A route that lands ends the ladder; a route that **wrote something it will not confirm**
+        // does *not*. That looks backwards and is deliberate. The field that reports this is, by a
+        // mile, the app whose editor advertises `ACTION_SET_TEXT`, returns success and drops the text
+        // on the floor — the case the read-back exists to catch — and the next route down, paste,
+        // inserts at the caret and is exactly what gets the words in. Stopping there would turn "this
+        // app lies" into "my text never appears", which is the one failure this whole pipeline exists
+        // to prevent. Duplicating a sentence into a field that also refuses to confirm it is the rarer
+        // and the cheaper of the two mistakes, and the words are visible to the user when it happens.
+        //
+        // What the flag *does* buy is that no route is tried twice: it is carried out of here and
+        // stops the whole ladder being run again as a second pass, and it stops the transcript from
+        // being reported as a clean failure that invites the user to paste it in themselves.
         var performed = false
 
         commitViaInputMethod(content, target, attempts).let { result ->
@@ -429,8 +488,9 @@ class TextInjector(private val service: AccessibilityService) {
             performed = performed || result.performed
         }
 
-        // A rebuild of the whole field is only offered when its content was proven. Otherwise the
-        // first write route is paste, which cannot prepend a placeholder or delete text it never read.
+        // A rebuild of the whole field is only offered when its content was proven — empty included.
+        // Otherwise the first write route is paste, which cannot prepend a placeholder or delete text
+        // it never read.
         if (target.contentProven) {
             writeAndVerify(target.node, content, target.text!!, attempts, Method.ACTION_SET_TEXT)
                 .let { result ->
@@ -438,7 +498,11 @@ class TextInjector(private val service: AccessibilityService) {
                     performed = performed || result.performed
                 }
         } else {
-            attempts += "field content unreadable, rebuild skipped"
+            attempts += if (target.password) {
+                "password field, rebuild skipped"
+            } else {
+                "field content unreadable, rebuild skipped"
+            }
         }
 
         pasteViaClipboard(target.node, content, attempts).let { result ->

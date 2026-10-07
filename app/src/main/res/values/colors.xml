@@ -3,5 +3,12 @@
     <color name="typorb_background">#070709</color>
     <color name="typorb_neon_cyan">#00F2FE</color>
     <color name="typorb_violet">#9B51E0</color>
-    <color name="ic_launcher_background">#070709</color>
+
+    <!--
+      The adaptive launcher icon's background layer. It has to be the colour the icon pack's
+      foreground plate is drawn against, so the mask's cut corners read as one continuous tile rather
+      than a plate floating on the app's dark canvas. Changing this without changing the foreground
+      makes the launcher icon show a coloured wedge in every corner.
+    -->
+    <color name="ic_launcher_background">#FAFAFA</color>
 </resources>

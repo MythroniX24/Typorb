@@ -66,27 +66,40 @@ and the orb is added again.
 
 ### 2. The Typorb lifecycle
 
+The orb is **a tile carrying the app's icon, with a panel that slides out of its left edge**. The tile is
+the orb: it is what the user taps, it never resizes, never changes shape, and it never moves while a state
+changes around it. Every state that has something to say says it in the panel beside it, so the resting orb
+stays recognisable as Typorb instead of being one more anonymous square floating over the keyboard.
+
 | State | Look | What happens |
 | --- | --- | --- |
-| Idle | 48dp rounded square (14dp radius), frosted glass, a **still** mic | Tap → start recording, `EFFECT_TICK` |
-| Recording | 160dp capsule, 5 canvas bars driven by live RMS decibels | Tap → stop, waveform freezes, morph to processing |
-| Processing | Rotating `Brush.sweepGradient` border, cascading ellipsis, stage label | `ACTION_SET_TEXT` (or clipboard paste), `EFFECT_CLICK` |
-| Failed | Red capsule, widened to fit the reason | Auto-collapses after 2.6s |
+| Idle | the icon tile on its own (user-sized, 48dp by default, 14dp corners), completely still | Tap → start recording, `EFFECT_TICK` |
+| Recording | a 104dp glass panel slides out to the **left** of the tile, carrying five bars that grow up and down from a centre line | Tap → stop; the panel collapses back and the tile keeps its corner |
+| Processing | the tile alone, dimmed under a rotating cobalt arc | `ACTION_SET_TEXT` (or clipboard paste), `EFFECT_CLICK` |
+| Failed | the panel comes back out, red-tinted and widened to fit the reason | Auto-collapses after 2.6s |
 
-**One surface, one clock, two window writes.** A window surface is clipped to its own bounds, so the pill
-has to be drawn inside a rectangle at least as big as it is. Earlier revisions tried to keep the two in
-step by animating both — a `ValueAnimator` on the window *and* a Compose size transform on the content —
-and later by having Compose report the box on **every animation frame** while the controller wrote the
-window on each report. Both were races: two clocks that disagree, and a window that for one frame is
-still the old rectangle, which is the pill visibly being cut off by its own window on a tap.
+**The waveform is the sentence, and it goes flat when the sentence stops.** The bars are symmetric about
+the panel's centre line with a 2dp rail drawn the whole width underneath them. While the user speaks the
+bars move up and down; when they stop, the bars shrink onto the rail at exactly its height *and* its
+opacity, so a pause is one unbroken straight line rather than a row of stubs shivering at the noise floor.
+When a level counts as silence is `WaveformGate`'s decision (at or below 0.16 — above a phone microphone's
+noise floor in a quiet room, below speech at arm's length), so it is asserted on the JVM rather than tuned
+by ear on a device.
 
-Now nothing races, because there is only one number in play. The pill's size is one
-`animateIntAsState`, on one easing curve; the composition reports that *target* to the controller once
-per state change; and the controller writes the window twice — first to the **hull** of the pill that is
-leaving and the pill that is arriving (so every frame of the morph is already inside it), then, when the
-morph is over, to the new pill alone. No frame of any animation writes the window, so no frame can
-outrun it. The window is that box plus 14dp of shadow padding on each side, and its **top-right corner
-is the pill's anchor**: a capsule grows leftwards from it, so the edge the user aimed at never moves.
+**One number, one clock, two window writes per state change.** A window surface is clipped to its own
+bounds, so the pill has to be drawn inside a rectangle at least as big as it is. Earlier revisions tried to
+keep the two in step by animating both — a `ValueAnimator` on the window *and* a Compose size transform on
+the content — and later by having Compose report the box on **every animation frame** while the controller
+wrote the window on each report. Both were races: two clocks that disagree, and a window that for one frame
+is still the old rectangle, which is the pill visibly being cut off by its own window on a tap.
+
+There is one number now. The tile's height is the pill's height in every state, so only the **width** is
+animated, on one easing curve; the composition reports that *target* to the controller once per state
+change; and the controller writes the window twice — first to the **hull** of the pill that is leaving and
+the pill that is arriving (so every frame of the morph is already inside it), then, when the morph is over,
+to the new pill alone. No frame of any animation writes the window, so no frame can outrun it. The window is
+that box plus 14dp of shadow padding on each side, and its **top-right corner is the tile's anchor**: the
+panel opens leftwards from it, so the tile — the thing under the user's finger — does not move by a pixel.
 
 **Motion, and what it is for.** A state change morphs the surface on one `FastOutSlowInEasing` clock,
 moves the border colour with it, crossfades the contents (the outgoing one leaves in 80ms, the incoming
@@ -122,11 +135,29 @@ keyboard is still on top, still visible and still touchable.
 
 The dropped position is written to Settings on release (not per frame), so it survives the window being
 recreated, the keyboard opening and closing, and a reboot. Until the user moves it, the position is still
-recomputed from the keyboard height, which is what keeps the orb 16dp above the IME as it rises and
-falls. Two smaller things make a drag smooth on a cheap phone: the screen bounds are cached rather than
-re-queried (that query is a binder call, and a drag asks up to 120 times a second), and a window write
-that WindowManager refuses is rolled back out of the layout params, so the next drag cannot start from a
-position the orb is not at.
+recomputed from the keyboard height, which is what keeps the orb 16dp above the IME as it rises and falls.
+Two smaller things make a drag cheap: the screen bounds are cached rather than re-queried (that query is a
+binder call, and a drag asks for it up to 120 times a second), and a window write that WindowManager
+refuses is rolled back out of the layout params, so the next drag cannot start from a position the orb is
+not at.
+
+**A fast drag no longer stalls.** A finger that moves quickly produces more `ACTION_MOVE` events than
+there are frames, and the platform delivers them in bursts. Each one used to end in its own
+`updateViewLayout` — a binder round trip through the window manager plus the relayout behind it — and once
+that work takes longer than the finger takes to move, the backlog feeds itself: stale move events pile up,
+every one of them is a transaction the orb does not need, and the orb visibly sticks and then jumps. So a
+move is no longer a write, it is a **destination**: everything that arrives inside one frame collapses to
+the last position, one frame writes the window once, and the position written is always the newest the
+user asked for, never a replayed intermediate the finger has already left. Nothing is delayed by it either
+— a window position only reaches the screen at a frame boundary, so a write on the next frame shows up
+exactly when a write on the event would have.
+
+While a finger is on the orb, the 600 ms accessibility watchdog **skips its tick**. A tick is a pair of
+accessibility queries — `findFocus`, the window list — and those are binder calls of their own on the same
+thread that has to hand the drag its next position, so one of them landing mid-drag is a dropped frame.
+Nothing is lost: a keyboard does not appear or disappear while a finger is dragging an orb, and the next
+tick after the finger lifts evaluates normally. That, plus the coalescing above, is the difference between
+a drag that is merely slow and one that keeps getting stuck.
 
 **Long press** the orb to type the last transcript again, without saying it a second time. It is the
 escape hatch for the worst failure this app has: words that were captured, transcribed, and then refused
@@ -159,7 +190,13 @@ rescue. When they collide, the drag wins.
    field whose current content could actually be read. `ACTION_SET_TEXT` replaces the whole field, so
    rebuilding one around text nobody read is how a placeholder ends up inside the user's message.
    What is read is kept, so a dictation into a half-written message **adds to it** instead of replacing
-   it.
+   it. An **empty** field counts as read, and that is the case that matters: `getText()` returns `null`
+   for a field holding nothing — the fresh chat box, the empty search field, the note with no first word,
+   which are the fields this app is opened on — and `null` used to be read as "this field will not say",
+   which switched the strongest route off exactly where it was best. Joining an empty field with a
+   transcript is the transcript, so a field proven empty is the *safest* rebuild there is. A password
+   field is the one genuine exception: it never reports its contents, so it keeps the insertive routes
+   only.
 4. **`ACTION_PASTE`** from the clipboard: it inserts at the field's own caret, so it is structurally
    incapable of inventing or deleting text. The original clipboard is restored afterwards (or cleared
    if Android refused to share it, which it does from Android 10 for background apps).
@@ -191,11 +228,13 @@ app/src/main/java/com/typorb/
 ├── data/                     SettingsRepository (encrypted), ModelCatalog, ModelRepository (download)
 ├── domain/                   DictationRequest/Coordinator, engine interface, errors
 ├── model/                    ProcessingEngine, ContextMode, OverlayUiState
-├── overlay/                  OverlayController (WindowManager host)
+├── overlay/                  OverlayController (WindowManager host), drag host + rules, geometry,
+│                             waveform silence gate
 ├── service/                  AccessibilityService, ImeDetector, TextInjector, geometry
 ├── ui/
 │   ├── dashboard/            Launcher screen + ViewModel (settings, permissions, model download)
-│   ├── overlay/              Compose pill (idle / recording / processing)
+│   ├── overlay/              Compose orb — the icon tile and its side panel
+│   ├── theme/                Palette, shapes, elevation, type
 │   └── theme/                Palette, Material 3 scheme, typography
 └── util/                     Haptics, Permissions, retry helper
 ```
@@ -290,7 +329,7 @@ tensor contract.
 
 ```bash
 ./gradlew assembleDebug           # app/build/outputs/apk/debug/app-debug.apk
-./gradlew testDebugUnitTest       # 153 unit tests (see below)
+./gradlew testDebugUnitTest       # 159 unit tests (see below)
 sh tools/fetch-whisper-model.sh   # optional: bake the weights in for offline dev
 ```
 
