@@ -94,12 +94,23 @@ class SettingsRepository(context: Context) {
     /** Hot settings stream; the overlay and dashboard both observe it. */
     val settings: StateFlow<TyporbSettings> = _settings.asStateFlow()
 
-    init {
-        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+    /**
+     * Held in a field rather than a local.
+     *
+     * `SharedPreferences` stores its listeners in a `WeakHashMap`, so a listener that nothing else
+     * references is collected at the next GC and every later change goes unnoticed: the dashboard
+     * writes a value, the file changes, and [settings] — which the overlay and both engines observe
+     * — keeps serving whatever was read when this repository was built. That is the "my change did
+     * nothing until I restarted the app" report, and it is silent because nothing throws.
+     */
+    private val preferenceListener =
+        SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
             _settings.value = readSnapshot()
         }
-        plainPrefs.registerOnSharedPreferenceChangeListener(listener)
-        securePrefs.registerOnSharedPreferenceChangeListener(listener)
+
+    init {
+        plainPrefs.registerOnSharedPreferenceChangeListener(preferenceListener)
+        securePrefs.registerOnSharedPreferenceChangeListener(preferenceListener)
     }
 
     fun current(): TyporbSettings = _settings.value

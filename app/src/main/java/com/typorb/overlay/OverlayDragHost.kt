@@ -108,13 +108,12 @@ internal class OverlayDragHost(
             }
 
             MotionEvent.ACTION_UP -> {
-                // ACTION_UP par event ka rawX/rawY available hai
-                // Check if there was any significant movement from DOWN position
-                val dx = event.rawX - downRawX
-                val dy = event.rawY - downRawY
-                val distance = kotlin.math.sqrt(dx * dx + dy * dy)
-                val wasTap = !dragging && !longPressFired && distance < 3f
-                finishGesture(tapped = wasTap)
+                // A tap is the slop rule's decision and nothing else. `dragging` is already
+                // "the touch crossed ViewConfiguration.scaledTouchSlop", which is the same
+                // threshold OverlayDrag.isDrag uses; a second, tighter distance test here rejected
+                // every tap whose finger had jittered a few px without ever crossing the slop —
+                // which is most taps on a real phone — so the orb looked dead to a light touch.
+                finishGesture(tapped = !dragging && !longPressFired)
             }
 
             MotionEvent.ACTION_CANCEL -> {

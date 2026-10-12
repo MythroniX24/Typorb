@@ -541,16 +541,12 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
      */
     private fun onPillTapped() {
         val dictation = coordinator ?: return
-        
-        // Keyboard check: agar keyboard open nahi hai aur recording running nahi,
-        // toh dictation start mat karo - user ko clear feedback do
-        val imeState = imeDetector.currentState(screenHeightPx())
-        if (!imeState.visible && dictation.state.value is OverlayUiState.Idle) {
-            OrbDiagnosticsBus.note("tap rejected: keyboard not visible")
-            haptics.reject()
-            return
-        }
-        
+        // There is deliberately no "keyboard must be visible" gate on this path. The orb is only on
+        // screen because a keyboard was detected (or a dictation is in flight), and that detection
+        // is the weakest link on OEM builds — so gating the tap on it turns "the words may not land
+        // cleanly" into "the tap does nothing at all", which is a worse failure and the one the user
+        // cannot work around. If no field can be reached, the injector still leaves the transcript
+        // on the clipboard and the pill says so.
         if (dictation.state.value is OverlayUiState.Idle ||
             dictation.state.value is OverlayUiState.Failed
         ) {

@@ -1,7 +1,6 @@
 package com.typorb.local
 
 import ai.onnxruntime.OnnxTensor
-import ai.onnxruntime.OnnxValue
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.content.Context
@@ -279,24 +278,53 @@ class WhisperOnnxEngine(
         val hiddenOutput: String = session.outputNames.firstOrNull { it.contains("hidden") }
             ?: session.outputNames.first()
 
-        /** Runs the encoder and returns the `last_hidden_state` tensor, owned by the caller. */
-        fun run(features: FloatArray): OnnxTensor {
+        /**
+         * Runs the encoder and returns the `last_hidden_state` in [Encoded], which the caller owns
+         * and must close.
+         *
+         * The result is deliberately **not** closed here. `OrtSession.Result.close()` closes every
+         * value the result owns, so returning the tensor out of a `use` block handed the caller an
+         * already-closed tensor — and feeding that to the decoder threw an `IllegalStateException`
+         * the moment a dictation ran.
+         *
+         * `Result.get(String)` returns an `Optional` on the ORT 1.17 line this app pins, so the
+         * hidden state is unwrapped rather than cast: `result[name]` is an `Optional`, never an
+         * `OnnxTensor`, which is what made the old type check fail on every dictation.
+         */
+        fun run(features: FloatArray): Encoded {
             val tensor = OnnxTensor.createTensor(
                 OrtEnvironment.getEnvironment(),
                 FloatBuffer.wrap(features),
                 longArrayOf(1, MEL_BINS.toLong(), EXPECTED_FRAMES.toLong()),
             )
-            return session.run(mapOf(featureInput to tensor)).use { result ->
-                // Widened to Any? so the type check is a real runtime guard rather than a cast the
-                // compiler can prove redundant from ORT's typed accessor.
-                val value: Any? = result[hiddenOutput]
-                if (value !is OnnxTensor) error("Encoder produced no hidden-state tensor")
-                value
+            val result = try {
+                session.run(mapOf(featureInput to tensor))
+            } finally {
+                // Outputs are owned by the Result; the input has to be released by us.
+                tensor.close()
             }
+            val hidden = runCatching { result.get(hiddenOutput).orElse(null) }
+                .getOrNull() as? OnnxTensor
+            if (hidden == null) {
+                result.close()
+                error("Encoder produced no hidden-state tensor")
+            }
+            return Encoded(result, hidden)
         }
 
         override fun close() {
             session.close()
+        }
+    }
+
+    /** The encoder's result and the hidden state inside it, kept alive together. */
+    private class Encoded(
+        private val result: OrtSession.Result,
+        val hidden: OnnxTensor,
+    ) : AutoCloseable {
+
+        override fun close() {
+            result.close()
         }
     }
 
@@ -331,8 +359,19 @@ class WhisperOnnxEngine(
         }
 
         /**
+         * Greedy decode with an optional KV cache.
+         *
          * @param encoderHidden non-null only for split exports; for fused graphs the mel features are
          *   fed directly instead.
+         *
+         * ## Who closes what
+         *
+         * Each step's outputs live in an [OrtSession.Result] owned by the caller of [run]. The cache
+         * tensors fed into the next step are owned by the result that produced them, so that result
+         * may only be released once the step consuming them has run — which is why the previous
+         * result is closed *after* the next `run`, and the last one in the `finally`. Closing
+         * eagerly (the old `use` block) closed the cache inputs before they were used and closed the
+         * logits before they were read.
          */
         fun greedyDecode(
             tokenizer: ByteLevelBpeTokenizer,
@@ -344,63 +383,81 @@ class WhisperOnnxEngine(
             val generated = mutableListOf<Long>()
             var tokens = prompt
             var cache: Map<String, OnnxTensor> = emptyMap()
+            var previous: OrtSession.Result? = null
+            try {
+                repeat(maxSteps) {
+                    // With a cache only the newest token is needed; without one the whole prefix re-runs.
+                    val feed = if (cache.isEmpty()) tokens else tokens.takeLast(1).toLongArray()
+                    val outputs = run(features, encoderHidden, feed, cache, useCache = cache.isNotEmpty())
+                    // The tensors handed to the run above came from `previous`, so it is spent now.
+                    previous?.close()
+                    previous = outputs
 
-            repeat(maxSteps) {
-                // With a cache only the newest token is needed; without one the whole prefix re-runs.
-                val feed = if (cache.isEmpty()) tokens else tokens.takeLast(1).toLongArray()
-                val outputs = run(features, encoderHidden, feed, cache, useCache = cache.isNotEmpty())
-
-                val next = argmaxAtLastFrame(outputs[logitsOutput]) ?: return generated
-                if (tokenizer.isStopToken(next)) return generated
-                generated += next
-                cache = readCache(outputs)
-                tokens = tokens + next
+                    val next = argmaxAtLastFrame(outputs) ?: return generated
+                    if (tokenizer.isStopToken(next)) return generated
+                    generated += next
+                    cache = readCache(outputs)
+                    tokens = tokens + next
+                }
+                return generated
+            } finally {
+                previous?.close()
             }
-            return generated
         }
 
+        /**
+         * One decoder step. The returned [OrtSession.Result] is owned by the caller and stays open
+         * until its logits and cache tensors have been consumed.
+         *
+         * Every tensor created here is closed immediately after the run. `Result.close()` releases
+         * outputs only, so leaving the inputs to the garbage collector leaked the ~960 KB mel tensor
+         * on every step — several hundred MB over a single decode on a fused export.
+         */
         private fun run(
             features: FloatArray,
             encoderHidden: OnnxTensor?,
             tokenIds: LongArray,
             cache: Map<String, OnnxTensor>,
             useCache: Boolean,
-        ): Map<String, OnnxValue> {
+        ): OrtSession.Result {
+            val created = ArrayList<OnnxTensor>(3)
             val inputs = HashMap<String, OnnxTensor>(2 + cache.size + 1)
             inputs[tokenInput] = OnnxTensor.createTensor(
                 environment,
                 LongBuffer.wrap(tokenIds),
                 longArrayOf(1, tokenIds.size.toLong()),
-            )
+            ).also { created.add(it) }
+            // Owned by the encoder's result, not by this call: never closed here.
             encoderHidden?.let { hidden -> encoderHiddenInput?.let { inputs[it] = hidden } }
             featureInput?.let { name ->
                 inputs[name] = OnnxTensor.createTensor(
                     environment,
                     FloatBuffer.wrap(features),
                     longArrayOf(1, MEL_BINS.toLong(), EXPECTED_FRAMES.toLong()),
-                )
+                ).also { created.add(it) }
             }
             if (useCache) {
                 cacheBranchInput?.let { name ->
                     inputs[name] = OnnxTensor.createTensor(environment, booleanArrayOf(true))
+                        .also { created.add(it) }
                 }
                 cache.forEach { (outputName, tensor) ->
                     cacheInputByOutput[outputName]?.let { inputs[it] = tensor }
                 }
             }
 
-            session.run(inputs).use { result ->
-                val named = LinkedHashMap<String, OnnxValue>(session.outputNames.size)
-                session.outputNames.forEachIndexed { index, name -> named[name] = result[index] }
-                return named
+            return try {
+                session.run(inputs)
+            } finally {
+                created.forEach { tensor -> runCatching { tensor.close() } }
             }
         }
 
-        private fun readCache(outputs: Map<String, OnnxValue>): Map<String, OnnxTensor> {
+        private fun readCache(outputs: OrtSession.Result): Map<String, OnnxTensor> {
             if (cacheInputByOutput.isEmpty()) return emptyMap()
             val cache = HashMap<String, OnnxTensor>(cacheInputByOutput.size)
             cacheInputByOutput.forEach { (outputName, _) ->
-                (outputs[outputName] as? OnnxTensor)?.let { cache[outputName] = it }
+                (outputs.get(outputName).orElse(null) as? OnnxTensor)?.let { cache[outputName] = it }
             }
             return cache
         }
@@ -420,8 +477,9 @@ class WhisperOnnxEngine(
         }
 
         /** Greedy argmax over the final `[…, vocab]` row of a `[1][T][V]` or `[1][V]` logits tensor. */
-        private fun argmaxAtLastFrame(logits: OnnxValue?): Long? {
-            val row = lastFrameOf((logits as? OnnxTensor)?.value) ?: return null
+        private fun argmaxAtLastFrame(outputs: OrtSession.Result): Long? {
+            val logits = outputs.get(logitsOutput).orElse(null) as? OnnxTensor ?: return null
+            val row = lastFrameOf(logits.value) ?: return null
             var bestId = 0L
             var bestScore = Float.NEGATIVE_INFINITY
             for (token in row.indices) {
@@ -485,11 +543,13 @@ class WhisperOnnxEngine(
             maxSteps: Int,
             prompt: LongArray,
         ): List<Long> {
-            val hidden = encoder?.run(features)
+            val encoded = encoder?.run(features)
             return try {
-                decoder.greedyDecode(tokenizer, features, hidden, maxSteps, prompt)
+                // `encoded` stays open for the whole decode: the decoder's `encoder_hidden_states`
+                // input is a tensor owned by the encoder's result.
+                decoder.greedyDecode(tokenizer, features, encoded?.hidden, maxSteps, prompt)
             } finally {
-                hidden?.close()
+                encoded?.close()
             }
         }
 

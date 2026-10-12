@@ -45,7 +45,7 @@ object GroqErrors {
         val serverMessage = parseServerMessage(error, gson)
         val (message, retryable) = when (error.code()) {
             STATUS_UNAUTHORIZED -> "Groq rejected your API key. Update it in Typorb." to false
-            STATUS_FORBIDDEN -> "This Groq key can't use ${error.code()} resources. Check your plan." to false
+            STATUS_FORBIDDEN -> "Groq refused this key (403). Check that it is enabled and has access." to false
             STATUS_TOO_LARGE -> "That recording is too long. Keep dictations under a minute." to false
             STATUS_RATE_LIMIT -> "Groq rate limit hit. Retrying shortly." to true
             in 500..599 -> "Groq is having a moment. Retrying shortly." to true
