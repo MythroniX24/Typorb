@@ -400,10 +400,10 @@ private fun ProcessingRing() {
  * is what makes the two read as one object while the panel is out.
  */
 private fun borderFor(state: OverlayUiState): Color = when (state) {
-    is OverlayUiState.Idle -> TyporbPalette.Border
-    is OverlayUiState.Recording -> TyporbPalette.Indigo.copy(alpha = 0.30f)
-    is OverlayUiState.Processing -> TyporbPalette.Cobalt.copy(alpha = 0.28f)
-    is OverlayUiState.Failed -> TyporbPalette.Danger.copy(alpha = 0.35f)
+    is OverlayUiState.Idle -> TyporbPalette.Indigo.copy(alpha = 0.5f)
+    is OverlayUiState.Recording -> TyporbPalette.Indigo.copy(alpha = 0.8f)
+    is OverlayUiState.Processing -> TyporbPalette.Cobalt.copy(alpha = 0.6f)
+    is OverlayUiState.Failed -> TyporbPalette.Danger.copy(alpha = 0.7f)
 }
 
 /** Recording: the live waveform filling the panel. */
@@ -542,22 +542,22 @@ private fun FailedContent(message: String) {
 private const val PANEL_PADDING_DP = 16
 
 /** Height of the waveform canvas inside a 48dp panel — tall enough to see, short enough to breathe. */
-private const val WAVE_HEIGHT_DP = 26
+private const val WAVE_HEIGHT_DP = 32
 
 /** The straight line the waveform collapses onto when the user stops speaking. */
 private const val RAIL_HEIGHT_DP = 2
 
 /** How solid that line is. Quiet bars fade to exactly this, which is what makes it one line. */
-private const val RAIL_ALPHA = 0.35f
+private const val RAIL_ALPHA = 0.5f
 
 /** Share of the waveform's width given over to the gaps between bars. */
 private const val BAR_GAP_FRACTION = 0.28f
 
 /** Indigo tint along the top of the panel, fading to nothing by the middle. */
-private const val SURFACE_TINT = 0.08f
+private const val SURFACE_TINT = 0.15f
 
 /** How far the orb tightens under the finger. Enough to read as a press, not enough to look broken. */
-private const val PRESSED_SCALE = 0.94f
+private const val PRESSED_SCALE = 0.90f
 
 /** The press response is quicker than the morph: it is feedback, and feedback has to feel immediate. */
 private const val PRESS_MS = 110

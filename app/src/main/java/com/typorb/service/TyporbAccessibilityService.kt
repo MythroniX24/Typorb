@@ -541,6 +541,16 @@ class TyporbAccessibilityService : AccessibilityService(), LifecycleOwner {
      */
     private fun onPillTapped() {
         val dictation = coordinator ?: return
+        
+        // Keyboard check: agar keyboard open nahi hai aur recording running nahi,
+        // toh dictation start mat karo - user ko clear feedback do
+        val imeState = imeDetector.currentState(screenHeightPx())
+        if (!imeState.visible && dictation.state.value is OverlayUiState.Idle) {
+            OrbDiagnosticsBus.note("tap rejected: keyboard not visible")
+            haptics.reject()
+            return
+        }
+        
         if (dictation.state.value is OverlayUiState.Idle ||
             dictation.state.value is OverlayUiState.Failed
         ) {

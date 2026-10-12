@@ -108,7 +108,13 @@ internal class OverlayDragHost(
             }
 
             MotionEvent.ACTION_UP -> {
-                finishGesture(tapped = !dragging && !longPressFired)
+                // ACTION_UP par event ka rawX/rawY available hai
+                // Check if there was any significant movement from DOWN position
+                val dx = event.rawX - downRawX
+                val dy = event.rawY - downRawY
+                val distance = kotlin.math.sqrt(dx * dx + dy * dy)
+                val wasTap = !dragging && !longPressFired && distance < 3f
+                finishGesture(tapped = wasTap)
             }
 
             MotionEvent.ACTION_CANCEL -> {
